@@ -6,13 +6,13 @@ name: security-gate
 # Worker). Independent jobs; a red job blocks the merge:
 #   1. gitleaks    — secret scan over FULL history (fetch-depth: 0), blocking.
 #   2. sca         — osv-scanner over this project's CycloneDX SBOM, blocking on High/Critical CVSS.
-#   3. semgrep     — p/java + p/secrets + p/spring over the whole tree, block on ERROR.
+#   3. semgrep     — p/java + p/secrets over the whole tree, block on ERROR.
 #                    NOT p/sql-injection and no .semgrep/rules.yml -- this project has no JDBC driver
 #                    and no GitLab client (verified at split time), so that ruleset doesn't apply here.
-#                    p/spring is included (closing a deviation the Gateway's own workflow still
-#                    carries as of the split -- its p/java+p/sql-injection+p/secrets set never added
-#                    p/spring). If p/spring proves too noisy to gate on for this small module, that
-#                    will be recorded here explicitly rather than silently dropped.
+#                    p/spring was tried (to close a deviation the Gateway's own workflow still carries)
+#                    and dropped: `semgrep.dev/c/p/spring` returns HTTP 404 -- it is not a real Semgrep
+#                    registry shorthand (confirmed via a live CI run), not merely noisy. No Spring-named
+#                    pack exists under that alias as of this writing; revisit if Semgrep publishes one.
 #   4. build-test  — mvn verify on Temurin JDK 21 (real-socket okhttp3:mockwebserver fakes for the
 #                    Gateway/llama-server, no Testcontainers, no Docker step needed).
 #
@@ -100,12 +100,12 @@ jobs:
       - name: Semgrep — full report (informational, non-blocking)
         run: |
           semgrep scan --metrics off --disable-version-check \
-            --config p/java --config p/secrets --config p/spring \
+            --config p/java --config p/secrets \
             . || true
       - name: Semgrep — ERROR-severity gate (blocking)
         run: |
           semgrep scan --metrics off --disable-version-check --error --severity ERROR \
-            --config p/java --config p/secrets --config p/spring \
+            --config p/java --config p/secrets \
             .
 
   build-test:
