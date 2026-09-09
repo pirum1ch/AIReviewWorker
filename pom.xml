@@ -1,0 +1,102 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <!-- Standalone Maven project, NOT a module of the root Gateway pom.xml (docs/worker-architecture.md
+         §11: "worker/pom.xml # Spring Boot 3.5.16 parent, standalone (not a root module)"). Built and
+         tested independently: `cd worker && mvn test`. -->
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <!-- Pinned to the exact same line as the Gateway (docs/worker-architecture.md §3.3): identical
+             CVE posture, no version drift for the appsec/SAST stage to re-triage. -->
+        <version>3.5.16</version>
+        <relativePath/>
+    </parent>
+
+    <groupId>com.review</groupId>
+    <artifactId>llm-worker</artifactId>
+    <version>1.0.0-SNAPSHOT</version>
+    <name>llm-worker</name>
+    <description>Stateless transport agent between Review Gateway and a local llama-server instance.</description>
+
+    <properties>
+        <java.version>21</java.version>
+        <mockwebserver.version>4.12.0</mockwebserver.version>
+        <!-- FW-03: jackson-bom 2.21.4 (Boot 3.5.16's default) carries jackson-databind 2.21.4, affected by
+             CVE-2026-54515 (GHSA-5jmj-h7xm-6q6v, JsonIgnoreProperties bypass on case-insensitive
+             deserialization). Bump the whole Jackson BOM (not just jackson-databind in isolation) so every
+             Jackson module (core/databind/annotations) stays on one consistent, Boot-BOM-recognized
+             line; fixed in 2.21.5. -->
+        <jackson-bom.version>2.21.5</jackson-bom.version>
+        <!-- FW-04: logback-core 1.5.34 (Boot 3.5.16's default) is affected by GHSA-jhq6-gfmj-v8fx; fixed in
+             1.5.35. This property (Boot's standard override point) re-pins both logback-core and
+             logback-classic together. -->
+        <logback.version>1.5.35</logback.version>
+    </properties>
+
+    <dependencies>
+        <!-- Web: RestClient (approved stack), and needed to serve /actuator/prometheus + /actuator/health. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+
+        <!-- Actuator + Micrometer/Prometheus: the six worker_* metrics (D8, architecture §8). -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-registry-prometheus</artifactId>
+        </dependency>
+
+        <!-- Bean Validation on WorkerProperties (basic per-field constraints; cross-field/fail-fast
+             rules that JSR-380 cannot express live in WorkerProperties' own @PostConstruct, mirroring
+             the Gateway's GatewayProperties.validateOnStartup() pattern). -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-validation</artifactId>
+        </dependency>
+
+        <!-- SnakeYAML: already an indirect dependency of every Spring Boot app (used internally to load
+             application.yml), declared directly here (version BOM-managed by the Boot parent) so
+             PromptTemplateService can parse src/main/resources/prompts/<version>.yml without adding an
+             unrelated new YAML-mapping library. -->
+        <dependency>
+            <groupId>org.yaml</groupId>
+            <artifactId>snakeyaml</artifactId>
+        </dependency>
+
+        <!-- ===== TEST ===== -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+            <!-- JUnit 5, Mockito, AssertJ, MockRestServiceServer support for RestClient. -->
+        </dependency>
+
+        <!-- okhttp MockWebServer: real-socket HTTP server for LlamaClient tests (parsing, 5xx, oversize
+             bodies); no Docker/Testcontainers on this machine. -->
+        <dependency>
+            <groupId>com.squareup.okhttp3</groupId>
+            <artifactId>mockwebserver</artifactId>
+            <version>${mockwebserver.version}</version>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <finalName>llm-worker</finalName>
+        <plugins>
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+                <!-- Executable fat JAR (spec: "Сборка Maven (fat JAR)"). -->
+            </plugin>
+        </plugins>
+    </build>
+</project>

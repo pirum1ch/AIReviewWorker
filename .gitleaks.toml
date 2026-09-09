@@ -1,0 +1,24 @@
+# gitleaks configuration for AIReviewWorker (WRR-10, mirrors AIReviewGateway's own .gitleaks.toml).
+#
+# Policy: use the full default gitleaks ruleset (NO detection rules disabled). Unlike the Gateway's
+# config, this one carries NO value-scoped exemption regexes -- verified at split time that none of
+# the Gateway's five fixture-value exemptions (dummy bearer tokens, EventService scrubber fixtures)
+# match anything under this repo's src/. Copying them forward would pre-exempt patterns for secrets
+# that do not exist here. The only path-based exemption is generated build output (`target/`,
+# gitignored), same rationale as the Gateway: the authoritative gate is the full-history `gitleaks
+# git` scan, which never sees target/ at all.
+#
+# If a Worker test fixture ever genuinely trips a default rule, add a VALUE-scoped exemption for
+# that literal here -- never a file- or path-scoped one.
+
+title = "AIReviewWorker gitleaks config"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Maven build output (generated, gitignored, not source)"
+paths = [
+    '''target/''',
+    '''.*/target/''',
+]

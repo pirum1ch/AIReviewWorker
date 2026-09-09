@@ -1,0 +1,10 @@
+target/
+.env
+.env.*
+!.env.example
+certs/
+*.log
+*.hprof
+.idea/
+*.iml
+.vscode/

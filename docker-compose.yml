@@ -1,0 +1,58 @@
+# LLM Worker -- single-service compose stack for ONE Worker instance on ONE llama-server host.
+#
+# This is NOT a full local stack: it has no Postgres and no Gateway service. Both of this Worker's
+# dependencies -- the Review Gateway and llama-server -- are REMOTE and reached over the network.
+# That is the point of the AIReviewGateway/AIReviewWorker repo split: a Worker deploys 1:1 with one
+# llama-server host (e.g. a Mac mini) and talks to a Gateway that lives elsewhere, over HTTPS.
+#
+# One host = one llama-server = one Worker. Running a second llama-server on another host means
+# copying this file's `worker:` service block again there (or adding a second service block with a
+# distinct WORKER_ID/BACKEND_ID if you genuinely want two Workers on one host) -- there is no
+# scaling knob, no `deploy.replicas`, no profiles.
+#
+# Required secrets/config (no defaults on purpose -- WorkerProperties fails startup fast without
+# them, same behavior as the bare-jar deployment). Put these in a `.env` file next to this one
+# (see `.env.example`), or export them before running:
+#
+#   GATEWAY_URL, GATEWAY_API_KEY, WORKER_ID, BACKEND_ID, LLAMA_URL, LLAMA_MODEL
+#
+# Then: docker compose up --build
+
+services:
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: llm-worker:local
+    restart: unless-stopped
+    environment:
+      # --- required; no defaults, WorkerProperties fails fast without them ---
+      GATEWAY_URL: ${GATEWAY_URL:?set GATEWAY_URL, e.g. https://gateway.internal}
+      GATEWAY_API_KEY: ${GATEWAY_API_KEY:?set GATEWAY_API_KEY, must equal the Gateway's WORKER_TOKEN}
+      WORKER_ID: ${WORKER_ID:?set WORKER_ID, e.g. worker-llama-01}
+      BACKEND_ID: ${BACKEND_ID:?set BACKEND_ID, must equal a backends.name row in the Gateway DB}
+      LLAMA_MODEL: ${LLAMA_MODEL:?set LLAMA_MODEL}
+      LLAMA_URL: ${LLAMA_URL:?set LLAMA_URL, this host's own llama-server}
+      # --- optional; each default here must equal Dockerfile ENV and application.yml's default ---
+      LLAMA_MAX_TOKENS: ${LLAMA_MAX_TOKENS:-12000}
+      LLAMA_ENABLE_THINKING: ${LLAMA_ENABLE_THINKING:-true}
+      WORKER_HEARTBEAT_INTERVAL_SEC: ${WORKER_HEARTBEAT_INTERVAL_SEC:-60}
+      WORKER_MAX_CONSTRAINT_BYTES: ${WORKER_MAX_CONSTRAINT_BYTES:-69632}
+    # NO ports: -- Actuator is loopback-only by design (server.address 127.0.0.1, WSR-12/FW-01).
+    #   docker compose exec worker curl -s http://127.0.0.1:8081/actuator/health
+    # volumes:  # uncomment if the Gateway's reverse proxy presents a private/internal-CA certificate
+    #   - ./certs/cacerts:/opt/java/openjdk/lib/security/cacerts:ro   # README.md §6 for how to build this
+
+    # --- dev-only, same-host Gateway over plain HTTP. Linux hosts only (Docker Desktop on
+    # macOS/Windows does not hand a container the host's loopback under host networking). ---
+    #
+    # FORBIDDEN pattern, even with WORKER_ALLOW_INSECURE_GATEWAY=true: forwarding this loopback
+    # setup to a REMOTE Gateway through a non-encrypting relay -- socat, a plain nginx proxy_pass,
+    # a published-port shim, etc. That would put GATEWAY_API_KEY and every diff on the wire in
+    # cleartext while WorkerProperties' loopback check happily sees only 127.0.0.1 and says nothing.
+    # The acceptable alternative for "I want to reach a remote Gateway without a reverse proxy yet"
+    # is an ENCRYPTING tunnel -- `ssh -L`, WireGuard, an mTLS mesh sidecar -- terminated locally so
+    # the Worker still only ever sees a genuine loopback address.
+    #
+    # network_mode: "host"
+    #   + GATEWAY_URL=http://127.0.0.1:8080 and WORKER_ALLOW_INSECURE_GATEWAY=true in .env

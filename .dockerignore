@@ -1,0 +1,9 @@
+target/
+.git/
+*.md
+Dockerfile
+.dockerignore
+.env
+.env.*
+certs/
+*.hprof

@@ -1,0 +1,125 @@
+name: security-gate
+
+# Worker repo's own CI security gate (WRR-11..WRR-13, docs/worker-repo-split-threat-model.md in the
+# AIReviewGateway repo). Trimmed copy of AIReviewGateway's own .github/workflows/security-gate.yml,
+# scoped to this repo's single Maven project (repo root, not `worker/pom.xml` -- this repo IS the
+# Worker). Independent jobs; a red job blocks the merge:
+#   1. gitleaks    — secret scan over FULL history (fetch-depth: 0), blocking.
+#   2. sca         — osv-scanner over this project's CycloneDX SBOM, blocking on High/Critical CVSS.
+#   3. semgrep     — p/java + p/secrets + p/spring over the whole tree, block on ERROR.
+#                    NOT p/sql-injection and no .semgrep/rules.yml -- this project has no JDBC driver
+#                    and no GitLab client (verified at split time), so that ruleset doesn't apply here.
+#                    p/spring is included (closing a deviation the Gateway's own workflow still
+#                    carries as of the split -- its p/java+p/sql-injection+p/secrets set never added
+#                    p/spring). If p/spring proves too noisy to gate on for this small module, that
+#                    will be recorded here explicitly rather than silently dropped.
+#   4. build-test  — mvn verify on Temurin JDK 21 (real-socket okhttp3:mockwebserver fakes for the
+#                    Gateway/llama-server, no Testcontainers, no Docker step needed).
+#
+# Also asserts (WRR-16, SHOULD) that no DB/GitLab dependency has been added to pom.xml -- this repo
+# must stay a stateless HTTP client with no PostgreSQL/GitLab access, per AIReviewGateway's CLAUDE.md
+# non-negotiable "Worker is a fully stateless HTTP client... never talks to GitLab or PostgreSQL".
+# That invariant used to be self-evident from code co-location; after the repo split nobody reviews
+# both trees side by side, so it is enforced here instead.
+
+on:
+  pull_request:
+  push:
+    branches: [ master ]
+
+permissions:
+  contents: read
+
+env:
+  GITLEAKS_VERSION: "8.30.1"
+  OSV_SCANNER_VERSION: "2.4.0"
+
+jobs:
+  gitleaks:
+    name: Secret scan (gitleaks, full history)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0            # scan the entire history, not just the tip
+      - name: Install gitleaks
+        run: |
+          set -euo pipefail
+          curl -sSL -o gitleaks.tar.gz \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          tar xzf gitleaks.tar.gz gitleaks
+          sudo install -m 0755 gitleaks /usr/local/bin/gitleaks
+          gitleaks version
+      - name: Scan full git history (blocking)
+        run: gitleaks git --no-banner --redact -c .gitleaks.toml --exit-code 1 .
+
+  sca:
+    name: Dependency CVEs (osv-scanner, block High/Critical)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+      - name: Generate CycloneDX SBOM (fully-resolved transitive tree)
+        run: mvn -B -ntp org.cyclonedx:cyclonedx-maven-plugin:2.9.1:makeAggregateBom -DoutputFormat=json -DoutputName=bom
+      - name: Install osv-scanner
+        run: |
+          set -euo pipefail
+          curl -sSL -o osv-scanner \
+            "https://github.com/google/osv-scanner/releases/download/v${OSV_SCANNER_VERSION}/osv-scanner_linux_amd64"
+          sudo install -m 0755 osv-scanner /usr/local/bin/osv-scanner
+          osv-scanner --version
+      - name: Scan SBOM and gate on High/Critical (CVSS >= 7.0)
+        run: |
+          set -uo pipefail
+          osv-scanner scan --format table -L target/bom.json || true
+          osv-scanner scan --format json -L target/bom.json > osv.json || true
+          MAX=$(jq -r '[.results[]?.packages[]?.groups[]?.max_severity
+                         | select(. != "" and . != null) | tonumber] | max // 0' osv.json)
+          HIGHCRIT=$(jq -r '[.results[]?.packages[]?.vulnerabilities[]?.database_specific.severity // empty
+                              | ascii_upcase | select(. == "HIGH" or . == "CRITICAL")] | length' osv.json)
+          echo "Highest CVSS = ${MAX}; High/Critical-labeled advisories = ${HIGHCRIT}"
+          awk -v s="$MAX" -v h="$HIGHCRIT" 'BEGIN{
+            if (s+0 >= 7.0 || h+0 > 0) {
+              print "::error::SCA gate: High/Critical dependency vulnerability present — blocking merge.";
+              exit 1
+            }
+            print "SCA gate PASS: no High/Critical (Medium/Low are reported above, non-blocking).";
+          }'
+
+  semgrep:
+    name: SAST (semgrep, block ERROR-severity)
+    runs-on: ubuntu-latest
+    container:
+      image: semgrep/semgrep
+    steps:
+      - uses: actions/checkout@v4
+      - name: Semgrep — full report (informational, non-blocking)
+        run: |
+          semgrep scan --metrics off --disable-version-check \
+            --config p/java --config p/secrets --config p/spring \
+            . || true
+      - name: Semgrep — ERROR-severity gate (blocking)
+        run: |
+          semgrep scan --metrics off --disable-version-check --error --severity ERROR \
+            --config p/java --config p/secrets --config p/spring \
+            .
+
+  build-test:
+    name: Build & test (Temurin JDK 21)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+      - name: Assert no DB/GitLab dependency (WRR-16 -- Worker stays a stateless HTTP client)
+        run: |
+          ! grep -Eq 'postgresql|jdbc|spring-boot-starter-data|gitlab4j' pom.xml
+      - name: mvn verify (real-socket mockwebserver fakes, no Docker)
+        run: mvn -B -ntp verify

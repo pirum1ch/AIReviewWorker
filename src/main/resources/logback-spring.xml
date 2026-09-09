@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration>
+    <!--
+        Stdout-only logging. No file appenders: nothing this process logs is meant to persist on disk,
+        since the discipline of never logging the bearer token, diff, or raw LLM response (WSR-10) is
+        enforced in the Java call sites themselves, not by any special handling here; keeping logging
+        stdout-only avoids ever leaving that (already-redacted) data in a forgotten log file too.
+    -->
+    <include resource="org/springframework/boot/logging/logback/defaults.xml"/>
+
+    <appender name="STDOUT" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} %-5level [%thread] %logger{36} - %msg%n</pattern>
+        </encoder>
+    </appender>
+
+    <root level="INFO">
+        <appender-ref ref="STDOUT"/>
+    </root>
+
+    <logger name="com.review.worker" level="INFO"/>
+</configuration>

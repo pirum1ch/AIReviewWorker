@@ -1,0 +1,12 @@
+# Test fixture exercising PromptTemplateService's override-precedence path: model/temperature/maxTokens
+# set here must win over the llama.* config defaults.
+system: >
+  You are a test reviewer.
+
+user: |
+  Review this diff:
+  {{DIFF}}
+
+model: template-model
+temperature: 0.7
+maxTokens: 512

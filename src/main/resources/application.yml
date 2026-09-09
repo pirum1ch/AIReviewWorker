@@ -1,0 +1,146 @@
+spring:
+  main:
+    banner-mode: off              # отключает вывод ASCII-баннера Spring Boot при старте
+  application:
+    name: llm-worker               # имя приложения Spring — используется в логах/actuator
+  lifecycle:
+    timeout-per-shutdown-phase: 30s  # максимальное время ожидания на каждую фазу graceful shutdown перед принудительным завершением
+
+server:
+  # WSR-12/FW-01: Worker — это чистый исходящий HTTP-клиент и не обслуживает сеть, кроме перечисленных
+  # ниже actuator-эндпоинтов -- привязка встроенного сервера целиком к loopback-адресу корректна и
+  # достаточна. Специально НЕ задаём management.server.port: по документированному поведению Spring
+  # Boot actuator привязывается к management.server.address только тогда, когда management.server.port
+  # отличается от server.port; без отдельного management-порта actuator следует за server.address (этим
+  # самым), поэтому отдельный (и легко забываемый как "неработающий" без этого комментария) ключ
+  # management.server.address не нужен. WorkerProperties.validateServerBinding() прерывает запуск, если
+  # это значение разрешается не в loopback-адрес (а также отдельно защищает случай отдельного
+  # management-порта, если он когда-либо появится через переменную окружения вне этого файла).
+  address: 127.0.0.1               # адрес, на котором встроенный HTTP-сервер Worker'а слушает запросы — обязан быть loopback-адресом (проверяется при старте)
+  port: ${WORKER_HTTP_PORT:8081}   # порт встроенного HTTP-сервера Worker'а (обслуживает только actuator-эндпоинты)
+  shutdown: graceful               # включает graceful shutdown — Worker дожидается завершения активных запросов перед остановкой
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,prometheus  # какие actuator-эндпоинты публикуются наружу: health (проверка живости) и prometheus (метрики в формате Prometheus)
+  endpoint:
+    health:
+      probes:
+        enabled: true               # включает liveness/readiness-пробы Spring Boot Actuator
+
+# ============================================================================================
+# Конфигурация ниже сгруппирована в логические блоки (chore/config-consolidation):
+#   §A Подключение к смежным системам (Gateway, backend-идентификация, сетевые таймауты)
+#   §B Параметры LLM-модели и бюджет токенов (llama.*, worker.limits.*) — единая сводная таблица
+#      со всеми связанными параметрами ОБОИХ процессов (Gateway и Worker) — DEPLOYMENT.md,
+#      раздел "Бюджет LLM-токенов: сводная таблица"
+#   §C Промпт-шаблоны
+# Порядок блоков ниже — организационный; Spring биндит свойства по полному пути, а не по позиции
+# в файле, так что переупорядочивание не меняет поведение приложения.
+# ============================================================================================
+
+# ---- §A Подключение к смежным системам --------------------------------------------------------
+# Gateway-facing HTTP client (short timeout -- must never block as long as an LLM completion).
+# Клиент, обращающийся к Gateway (короткий таймаут -- не должен блокироваться так же долго, как
+# выполнение LLM-запроса).
+gateway:
+  url: ${GATEWAY_URL}              # базовый URL Review Gateway, к которому Worker обращается за job'ами (claim/heartbeat/result/fail)
+  api-key: ${GATEWAY_API_KEY}      # Bearer-токен (worker-token со стороны Gateway), которым Worker аутентифицируется к Gateway
+
+backend:
+  id: ${BACKEND_ID}                # идентификатор backend'а (llama-server), с которым данный Worker работает 1:1 — сообщается Gateway при claim/heartbeat/result
+
+network:
+  poll-interval-ms: ${WORKER_POLL_INTERVAL_MS:3000}   # интервал (в миллисекундах) между попытками Worker'а запросить у Gateway новую job через /jobs/claim, когда очередь пуста
+  request-timeout-sec: ${WORKER_REQUEST_TIMEOUT_SEC:1800}   # таймаут (в секундах) ожидания ответа от llama-server на запрос генерации (учитывает, что один completion может идти долго)
+  gateway-timeout-sec: ${WORKER_GATEWAY_TIMEOUT_SEC:10}   # таймаут (в секундах) HTTP-запросов Worker'а к Gateway (claim/heartbeat/result/fail) — короткий, т.к. Gateway не должен блокироваться так же долго, как LLM
+
+heartbeat:
+  # Must stay well below the Gateway's ~180s stale-heartbeat sweep interval; WorkerProperties fails
+  # startup fast at >=180s and warns above 90s.
+  # Должен оставаться значительно ниже ~180-секундного интервала Gateway для обнаружения "протухших"
+  # heartbeat'ов; WorkerProperties прерывает запуск при значении >=180s и предупреждает при значении
+  # выше 90s.
+  interval-sec: ${WORKER_HEARTBEAT_INTERVAL_SEC:60}   # интервал (в секундах), с которым Worker отправляет Gateway heartbeat-пинги по активной job'е
+
+# ---- §B Параметры LLM-модели и бюджет токенов ---------------------------------------------------
+# llama.* и worker.limits.* ниже — часть ОДНОГО общего бюджета контекстного окна модели вместе с
+# gateway.diff.*/gateway.structured.*/gateway.prompt.limits.* на стороне Gateway (см. §B в
+# gateway/application.yml) и с maxTokens в каждом worker/.../prompts/*.yml. Эти параметры физически
+# не могут жить в одном файле (Gateway и Worker — разные процессы, не обязательно на одной машине),
+# поэтому единая сводная таблица со всеми связями/неравенствами между ними — в DEPLOYMENT.md,
+# раздел "Бюджет LLM-токенов: сводная таблица". Смотрите её целиком перед тем, как менять любое из
+# значений ниже.
+#
+# llama-server HTTP client (long timeout -- a single completion can take tens of minutes).
+# HTTP-клиент к llama-server (длинный таймаут -- один запрос на генерацию может занимать десятки минут).
+llama:
+  url: ${LLAMA_URL:http://127.0.0.1:8000}   # URL локального (или разрешённого нелокального, см. allow-non-loopback) llama-server, к которому Worker отправляет запросы на инференс
+  model: ${LLAMA_MODEL}            # имя/идентификатор модели, которое передаётся в запросе к llama-server
+  temperature: ${LLAMA_TEMPERATURE:0.1}   # параметр temperature для генерации LLM — степень случайности/творчества ответа (ниже — более детерминированный ответ)
+  max-tokens: ${LLAMA_MAX_TOKENS:12000}    # максимальное число токенов в ответе, которое Worker запрашивает у llama-server, если шаблон промпта (prompts/*.yml) не переопределяет своё значение maxTokens (v3.yml -> 12000) — ЧАСТЬ ОБЩЕГО БЮДЖЕТА ТОКЕНОВ, должна расти вместе с gateway.diff.answer-reserve (см. сводную таблицу в DEPLOYMENT.md)
+  # WSR-06 (SHOULD): a non-loopback llama.url only warns at startup unless this is set, since the
+  # llama-server socket is unauthenticated by design.
+  # WSR-06 (рекомендация): если llama.url указывает не на loopback-адрес, при старте выводится только
+  # предупреждение, если этот флаг не установлен — сокет llama-server по замыслу не аутентифицирован.
+  allow-non-loopback: ${LLAMA_ALLOW_NON_LOOPBACK:false}   # явно подтверждает, что llama.url намеренно указывает на нелокальный (не loopback) адрес — убирает предупреждение при старте, но не отменяет риск незащищённого сокета llama-server
+  # true (по умолчанию) — Worker не шлёт chat_template_kwargs вообще, поведение запроса не меняется.
+  # false — на КАЖДЫЙ запрос уходит chat_template_kwargs: {"enable_thinking": false}, безусловно
+  # отключая "размышления" reasoning-модели (Qwen3-подобные). Грубый, безусловный рубильник — если backend
+  # поддерживает собственный флаг запуска --chat-template-kwargs, предпочтительнее настроить там
+  # reasoning_effort (например "low"): это ограничивает размышления, а не убирает их совсем, и не требует
+  # трогать Worker. См. DEPLOYMENT.md "Управление reasoning/thinking у модели".
+  enable-thinking: ${LLAMA_ENABLE_THINKING:true}
+
+# worker.limits.* ниже — тоже часть общего бюджета токенов (см. банер выше). worker.id/version/
+# allow-insecure-gateway/log в этом же блоке к бюджету не относятся, но остаются здесь же: это все
+# поля одного класса WorkerProperties.Worker, физически неразделимого без изменения кода.
+worker:
+  id: ${WORKER_ID}                 # уникальный идентификатор данного экземпляра Worker'а — передаётся в claim/heartbeat/result и попадает в audit-лог Gateway
+  version: 1.0.0                   # версия сборки Worker'а — передаётся Gateway для диагностики/трассировки
+  # Dev-only escape hatch: valid ONLY when gateway.url resolves to a loopback host (WSR-09);
+  # WorkerProperties fails startup fast otherwise, regardless of this flag.
+  # Только для разработки: этот флаг действует ТОЛЬКО когда gateway.url указывает на loopback-хост
+  # (WSR-09); в остальных случаях WorkerProperties прерывает запуск независимо от значения флага.
+  allow-insecure-gateway: ${WORKER_ALLOW_INSECURE_GATEWAY:false}   # разрешает обращение к Gateway по незащищённому (не loopback/не https) адресу — только для локальной разработки
+  limits:
+    max-diff-bytes: ${WORKER_MAX_DIFF_BYTES:262144}   # максимальный размер diff'а (в байтах), который Worker готов принять и передать в LLM
+    max-response-bytes: ${WORKER_MAX_RESPONSE_BYTES:200000}   # максимальный размер ответа LLM (в байтах), который Worker готов принять и отправить обратно в Gateway
+    # Prompt Manager (V3, WSR-03 sibling): independent of gateway.prompt.limits.max-sections.
+    # Prompt Manager (V3, соседний параметр к WSR-03): не связан с gateway.prompt.limits.max-sections.
+    max-system-messages: ${WORKER_MAX_SYSTEM_MESSAGES:8}   # максимальное число system-сообщений, которые Worker готов передать модели за один запрос
+    # Structured Review Output (SRO-13, threat model SOR-06): независимая от Gateway граница на
+    # присланный Gateway'ем responseFormat/jsonSchema, измеряется в UTF-8 байтах ДО readTree.
+    # Намеренно больше gateway.structured.max-schema-bytes (65536) на размер самого большого
+    # wire-обёртки (~70 байт для RESPONSE_FORMAT_JSON_SCHEMA) -- см. DEPLOYMENT.md про связку двух
+    # параметров.
+    max-constraint-bytes: ${WORKER_MAX_CONSTRAINT_BYTES:69632}   # максимальный размер (в байтах, UTF-8, до парсинга) декодер-констрейнта (responseFormat/jsonSchema), присланного Gateway'ем
+  log:
+    # Worker Observability & Claim Latency (WOC-04): at most one idle-liveness INFO line per this many
+    # seconds while no job is available; 0 disables it.
+    # Worker Observability & Claim Latency (WOC-04): не чаще одной INFO-строки о простое ("живости") за
+    # указанное число секунд, пока нет доступных job'ов; 0 отключает такое логирование.
+    idle-summary-interval-sec: ${WORKER_IDLE_SUMMARY_INTERVAL_SEC:300}   # минимальный интервал (в секундах) между INFO-логами о простое Worker'а при отсутствии job'ов; 0 — отключить
+
+# ---- §C Промпт-шаблоны ---------------------------------------------------------------------------
+prompt:
+  # WSR-07: MUST start with "classpath:" -- templates ship only inside the fat JAR, never from an
+  # operator-writable filesystem directory. WorkerProperties fails startup fast otherwise.
+  # WSR-07: ОБЯЗАНО начинаться с "classpath:" -- шаблоны промптов поставляются только внутри fat JAR, а
+  # не из доступной оператору для записи директории на файловой системе. Иначе WorkerProperties
+  # прерывает запуск.
+  location: classpath:prompts/     # путь к шаблонам промптов, зашитым внутри jar-файла Worker'а
+
+# Recommended JVM launch flags for the launchd/systemd unit that runs this fat JAR (not enforceable
+# from inside the JVM once it has already started -- see WorkerProperties' best-effort WARN-only check):
+#   -XX:-HeapDumpOnOutOfMemoryError
+# A heap dump on OOM could persist an in-flight diff/LLM-response to disk in plaintext (WT-10).
+#
+# Рекомендуемые флаги запуска JVM для launchd/systemd-юнита, запускающего этот fat JAR (не могут быть
+# принудительно применены изнутри уже запущенной JVM -- см. best-effort проверку с WARN-уровнем в
+# WorkerProperties):
+#   -XX:-HeapDumpOnOutOfMemoryError
+# Heap dump при OutOfMemoryError мог бы сохранить на диск в открытом виде обрабатываемый в данный
+# момент diff/ответ LLM (WT-10).

@@ -1,0 +1,15 @@
+# Paths semgrep must not scan (SR-23 CI security gate).
+# Build output and non-source artifacts only — all first-party source under src/ IS scanned.
+
+target/
+**/target/
+*.class
+*.jar
+
+# SBOM / scanner artifacts produced by the security-gate workflow itself
+bom.json
+**/bom.json
+
+# Docs and spec text are not code; the Java/Spring rules do not apply
+docs/
+*.md
