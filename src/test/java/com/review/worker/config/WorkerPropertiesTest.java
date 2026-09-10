@@ -1,13 +1,21 @@
 package com.review.worker.config;
 
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import jakarta.validation.ConstraintViolation;
 import jakarta.validation.Validation;
 import jakarta.validation.Validator;
 import jakarta.validation.ValidatorFactory;
 import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.slf4j.LoggerFactory;
 
+import java.util.List;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -34,6 +42,20 @@ class WorkerPropertiesTest {
     @AfterAll
     static void tearDownValidator() {
         validatorFactory.close();
+    }
+
+    private ListAppender<ILoggingEvent> logAppender;
+
+    @BeforeEach
+    void attachLogAppender() {
+        logAppender = new ListAppender<>();
+        logAppender.start();
+        ((Logger) LoggerFactory.getLogger(WorkerProperties.class)).addAppender(logAppender);
+    }
+
+    @AfterEach
+    void detachLogAppender() {
+        ((Logger) LoggerFactory.getLogger(WorkerProperties.class)).detachAppender(logAppender);
     }
 
     private WorkerProperties validProperties() {
@@ -290,5 +312,155 @@ class WorkerPropertiesTest {
         WorkerProperties properties = validProperties();
         Set<ConstraintViolation<WorkerProperties>> violations = validator.validate(properties);
         assertThat(violations).isEmpty();
+    }
+
+    // --- Backend Self-Registration (BSQ-20/BSR-18): backend.url validation -----------------------------
+
+    @Test
+    void unsetBackendUrlPassesStartupValidationWithoutAnnouncing() {
+        // BSR-17: absence is the toggle -- unset must never fail startup.
+        assertThatCode(() -> validProperties().validateOnStartup()).doesNotThrowAnyException();
+    }
+
+    @Test
+    void blankBackendUrlPassesStartupValidation() {
+        WorkerProperties properties = validProperties();
+        properties.getBackend().setUrl("   ");
+        assertThatCode(properties::validateOnStartup).doesNotThrowAnyException();
+    }
+
+    @Test
+    void validBackendUrlPassesStartupValidation() {
+        WorkerProperties properties = validProperties();
+        properties.getBackend().setUrl("http://192.168.1.50:8080");
+        assertThatCode(properties::validateOnStartup).doesNotThrowAnyException();
+    }
+
+    @Test
+    void malformedBackendUrlFailsFast() {
+        WorkerProperties properties = validProperties();
+        properties.getBackend().setUrl("http://[not-a-valid-host");
+        assertThatThrownBy(properties::validateOnStartup)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("backend.url")
+                .hasMessageContaining("valid URI");
+    }
+
+    @Test
+    void nonHttpBackendUrlSchemeFailsFast() {
+        WorkerProperties properties = validProperties();
+        properties.getBackend().setUrl("ftp://192.168.1.50:8080");
+        assertThatThrownBy(properties::validateOnStartup)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("backend.url")
+                .hasMessageContaining("http");
+    }
+
+    @Test
+    void loopbackBackendUrlFailsFastAndMentionsLlamaUrlConfusion() {
+        WorkerProperties properties = validProperties();
+        properties.getBackend().setUrl("http://127.0.0.1:8000");
+        assertThatThrownBy(properties::validateOnStartup)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("backend.url")
+                .hasMessageContaining("loopback")
+                .hasMessageContaining("llama.url");
+    }
+
+    @Test
+    void localhostBackendUrlFailsFastAsLoopback() {
+        WorkerProperties properties = validProperties();
+        properties.getBackend().setUrl("http://localhost:8000");
+        assertThatThrownBy(properties::validateOnStartup)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("loopback");
+    }
+
+    @Test
+    void backendUrlWithPathFailsFast() {
+        WorkerProperties properties = validProperties();
+        properties.getBackend().setUrl("http://192.168.1.50:8080/health");
+        assertThatThrownBy(properties::validateOnStartup)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("backend.url")
+                .hasMessageContaining("bare origin");
+    }
+
+    @Test
+    void backendUrlWithTrailingSlashOnlyFailsFast() {
+        WorkerProperties properties = validProperties();
+        properties.getBackend().setUrl("http://192.168.1.50:8080/");
+        assertThatThrownBy(properties::validateOnStartup)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("bare origin");
+    }
+
+    @Test
+    void backendUrlWithQueryFailsFast() {
+        WorkerProperties properties = validProperties();
+        properties.getBackend().setUrl("http://192.168.1.50:8080?x=1");
+        assertThatThrownBy(properties::validateOnStartup)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("bare origin");
+    }
+
+    @Test
+    void backendUrlWithFragmentFailsFast() {
+        WorkerProperties properties = validProperties();
+        properties.getBackend().setUrl("http://192.168.1.50:8080#frag");
+        assertThatThrownBy(properties::validateOnStartup)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("bare origin");
+    }
+
+    @Test
+    void backendUrlWithUserinfoFailsFast() {
+        WorkerProperties properties = validProperties();
+        properties.getBackend().setUrl("http://user:pass@192.168.1.50:8080");
+        assertThatThrownBy(properties::validateOnStartup)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("bare origin");
+    }
+
+    @Test
+    void backendUrlWithoutPortIsAcceptedAsABareOrigin() {
+        WorkerProperties properties = validProperties();
+        properties.getBackend().setUrl("http://backend.internal");
+        assertThatCode(properties::validateOnStartup).doesNotThrowAnyException();
+    }
+
+    @Test
+    void backendUrlIdenticalToLlamaUrlWarnsButDoesNotFailStartup() {
+        WorkerProperties properties = validProperties();
+        properties.getLlama().setUrl("http://192.168.1.50:8080");
+        properties.getBackend().setUrl("http://192.168.1.50:8080");
+
+        assertThatCode(properties::validateOnStartup).doesNotThrowAnyException();
+
+        List<String> warnMessages = logAppender.list.stream()
+                .filter(event -> event.getLevel() == Level.WARN)
+                .map(ILoggingEvent::getFormattedMessage)
+                .toList();
+        assertThat(warnMessages).anyMatch(msg -> msg.contains("backend.url") && msg.contains("llama.url"));
+    }
+
+    @Test
+    void distinctBackendAndLlamaUrlsNeverWarn() {
+        WorkerProperties properties = validProperties();
+        properties.getBackend().setUrl("http://192.168.1.50:8080");
+
+        assertThatCode(properties::validateOnStartup).doesNotThrowAnyException();
+
+        assertThat(logAppender.list).noneMatch(event -> event.getLevel() == Level.WARN
+                && event.getFormattedMessage().contains("byte-identical"));
+    }
+
+    @Test
+    void noValidationMessageEverEchoesTheConfiguredBackendUrlValue() {
+        WorkerProperties properties = validProperties();
+        properties.getBackend().setUrl("http://127.0.0.1:8000/should-never-be-quoted");
+        assertThatThrownBy(properties::validateOnStartup)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageNotContaining("127.0.0.1:8000/should-never-be-quoted");
     }
 }

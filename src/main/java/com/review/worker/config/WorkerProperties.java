@@ -145,6 +145,7 @@ public class WorkerProperties {
         }
         validatePromptLocation();
         validateServerBinding();
+        validateBackendUrl();
         warnIfHeapDumpOnOutOfMemoryEnabled();
     }
 
@@ -204,6 +205,54 @@ public class WorkerProperties {
                     + "is not set — the llama-server endpoint is unauthenticated; confirm this is intentional "
                     + "(WSR-06)");
         }
+    }
+
+    /**
+     * Backend Self-Registration (BSR-18/BSQ-20): only runs when {@code backend.url} is non-blank — its
+     * presence is the sole toggle for self-registration (BSR-17), not a separate boolean flag. Failure
+     * messages name the property only, never its configured value, matching every other rule in this
+     * method.
+     */
+    private void validateBackendUrl() {
+        String url = backend.getUrl();
+        if (url == null || url.isBlank()) {
+            return;
+        }
+        URI uri;
+        try {
+            uri = new URI(url);
+        } catch (URISyntaxException e) {
+            throw new IllegalStateException("backend.url is not a valid URI — refusing to start");
+        }
+        String scheme = uri.getScheme();
+        if (!"http".equalsIgnoreCase(scheme) && !"https".equalsIgnoreCase(scheme)) {
+            throw new IllegalStateException("backend.url must use http:// or https:// — refusing to start");
+        }
+        if (isLoopbackHost(uri.getHost())) {
+            throw new IllegalStateException(
+                    "backend.url must be an address the Gateway can reach (not loopback) — it is not the "
+                            + "same setting as llama.url — refusing to start");
+        }
+        if (!isBareOrigin(uri)) {
+            // BSQ-04/BSQ-20: the Gateway independently enforces this same bare-origin rule server-side
+            // (422 BACKEND_URL_REJECTED) -- failing fast here with a precise reason is far better UX than
+            // a cryptic Gateway rejection.
+            throw new IllegalStateException(
+                    "backend.url must be a bare origin (scheme://host[:port]) with no path, query, "
+                            + "fragment, or userinfo — refusing to start");
+        }
+        if (url.equals(llama.getUrl())) {
+            log.warn("backend.url is byte-identical to llama.url — legal only for an unusual non-loopback "
+                    + "llama deployment, and usually a sign that the two were confused; confirm this is intentional");
+        }
+    }
+
+    private static boolean isBareOrigin(URI uri) {
+        String path = uri.getPath();
+        return (path == null || path.isEmpty())
+                && uri.getQuery() == null
+                && uri.getFragment() == null
+                && uri.getUserInfo() == null;
     }
 
     private void validateHeartbeatInterval() {
@@ -467,6 +516,15 @@ public class WorkerProperties {
     public static class Backend {
         @NotBlank
         private String id;
+        /**
+         * Backend Self-Registration (BSR-16/BSR-17): optional, no default. Externally reachable
+         * {@code scheme://host[:port]} the GATEWAY should health-probe this backend at — not the same
+         * setting as {@link Llama#url}, which is where this Worker process itself connects (loopback by
+         * default). Its presence is the only toggle for whether this Worker announces itself on startup;
+         * see {@code lifecycle.WorkerRunner}. Validated by {@link WorkerProperties#validateBackendUrl()}
+         * only when non-blank.
+         */
+        private String url;
 
         public String getId() {
             return id;
@@ -474,6 +532,14 @@ public class WorkerProperties {
 
         public void setId(String id) {
             this.id = id;
+        }
+
+        public String getUrl() {
+            return url;
+        }
+
+        public void setUrl(String url) {
+            this.url = url;
         }
     }
 

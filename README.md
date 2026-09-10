@@ -60,6 +60,57 @@ all queue/retry/dedup/timeout/routing/publish logic lives in the Gateway (see th
 
 ## 2. How it works
 
+### 2.0 Startup: Backend Self-Registration (optional)
+
+Before the `worker-loop` thread is ever started, `lifecycle.WorkerRunner` (running synchronously on the
+main thread, inside `SpringApplication.run()`, after context refresh but before Spring Boot publishes
+`ReadinessState.ACCEPTING_TRAFFIC`) checks `backend.url` (`BACKEND_URL`, [§5](#5-configuration-reference)):
+
+- **Unset (default):** one INFO log line ("Backend self-registration disabled (backend.url not set); this
+  backend must be registered via the Gateway's admin API or SQL"), then straight to `workerLoop.start()`
+  — today's behavior, unchanged.
+- **Set:** `POST /backends/announce {backendId, workerId, url, model}` (`gateway.GatewayClient.announce`)
+  is called once, before the loop starts, so an unregistered/unreachable backend reports readiness
+  `OUT_OF_SERVICE` for free — no extra code needed for that signal. The outcome decides what happens next:
+  - **Accepted (2xx):** INFO logging `name`/`status`/`created`; if the *effective* status the Gateway
+    returns is not `ACTIVE` (e.g. an operator parked it `MAINTENANCE`/`OFFLINE`), an additional WARN that
+    no jobs will be dispatched until an operator reactivates it. Either way, `workerLoop.start()` runs next.
+  - **Gateway unreachable / `5xx` / `429` (`GatewayUnavailableException`):** WARN, then retry forever with
+    the same capped-exponential backoff the claim loop uses (base `network.poll-interval-ms`, cap 60s,
+    `core.CappedBackoff`) — the loop never starts until announce succeeds or the process is asked to stop.
+    This retry sleeps in short slices and checks a shutdown signal (set from a `ContextClosedEvent`
+    listener) between them, so a `SIGTERM` during this window still terminates promptly instead of
+    requiring `SIGKILL` — a plain `Thread.sleep` loop here would not otherwise be interruptible by the
+    JVM's normal shutdown hook, since the context has not finished starting yet. `503
+    BACKEND_REGISTRY_FULL` (the Gateway's registry is at `BACKEND_MAX_BACKENDS`) lands here deliberately:
+    it is a transient Gateway-side capacity condition, so this Worker comes up by itself the moment an
+    operator decommissions a stale backend or raises the cap.
+  - **`403`/`404` — non-fatal, WARN and continue:** this is the ordinary "this Gateway does not do
+    self-registration" case (the Gateway's `gateway.backend.self-registration.enabled` is off, the token
+    is not the `WORKER` token, or — for `404` — an older Gateway build predates the endpoint). One WARN
+    naming the likely cause, then `workerLoop.start()` runs anyway. Deliberately **not** fatal: an operator
+    flipping the Gateway's kill switch off must never crash-loop the whole Worker fleet.
+  - **Every other `4xx` — fatal, startup fails.** The split is an explicit allowlist on both sides with
+    **fail-fast as the default**: only `403`/`404` (above) and `429` (transient, retried) are exempt, and
+    anything else in the `4xx` range — enumerated or not — is treated as a client-side condition that will
+    never self-heal. `WorkerRunner` throws `IllegalStateException` naming the status and the likely cause;
+    the loop never starts. The named causes:
+
+    | Status | Likely cause named in the startup error |
+    |---|---|
+    | `400` | `backend.id`, `worker.id`, or `llama.model` failed the Gateway's validation — check `BACKEND_ID`/`WORKER_ID`/the model name for length or disallowed characters |
+    | `401` | `GATEWAY_API_KEY` is missing, or is not the Gateway's `WORKER` token |
+    | `409` | `backend.id` is already owned by a different `worker.id` on the Gateway — check for a copy-pasted `BACKEND_ID` across hosts |
+    | `422` | `backend.url` was rejected by the Gateway's host allowlist, or was not a bare origin |
+    | any other `4xx` | generic "the Gateway rejected this announce as a client-side error (`N`)" |
+
+    Retrying any of these forever would produce a Worker that never starts, never exits, and logs a
+    misleading "Gateway unavailable" WARN while the Gateway is perfectly healthy — which is why an
+    unrecognised `4xx` fails fast rather than being assumed transient.
+
+See the Gateway repo's `docs/backend-self-registration-architecture.md` §4 and
+`docs/backend-self-registration-threat-model.md` (BSQ-18/19/20) for the full design and its rationale.
+
 ```
  worker-loop thread                                    worker-heartbeat thread (per job)
  ──────────────────                                    ─────────────────────────────────
@@ -238,6 +289,7 @@ on any violation below; every failure message names the property only, never its
 
 | Env var | Property | Default | Notes |
 |---|---|---|---|
+| `BACKEND_URL` | `backend.url` | unset (self-registration disabled) | Backend Self-Registration: **optional, no separate enable flag — its presence is the only toggle** ([§2.0](#20-startup-backend-self-registration-optional)). The externally reachable `scheme://host[:port]` the **Gateway** should health-probe this backend at — not the same setting as `LLAMA_URL` below (where this Worker process itself connects, loopback by default; confusing the two is the single most likely operator mistake here). When set, `WorkerProperties.validateBackendUrl()` fails startup fast unless it: parses as a URI; uses `http://`/`https://`; resolves to a **non**-loopback host (message explicitly distinguishes it from `llama.url`); and is a **bare origin** — no path, query, fragment, or userinfo (the Gateway enforces the same rule server-side, `422 BACKEND_URL_REJECTED`; failing fast here gives a precise reason instead). Logs a WARN (never fails) if byte-identical to `LLAMA_URL`. |
 | `WORKER_ALLOW_INSECURE_GATEWAY` | `worker.allow-insecure-gateway` | `false` | Dev-only escape hatch — see the `GATEWAY_URL` row above; has no effect for a non-loopback `gateway.url`. |
 | `WORKER_MAX_DIFF_BYTES` | `worker.limits.max-diff-bytes` | `262144` (256 KiB) | Hard cap on the claimed diff, in UTF-8 bytes; exceeding it abandons the job before any llama call. Defensive bound against a misbehaving/compromised Gateway, set generously above the Gateway's own diff-token budget. |
 | `WORKER_MAX_RESPONSE_BYTES` | `worker.limits.max-response-bytes` | `200000` | Hard cap on the llama response body, enforced **mid-stream** (never buffers past the cap); exceeding it abandons the job. Matches the Gateway's own documented "normal" raw-response ceiling. |

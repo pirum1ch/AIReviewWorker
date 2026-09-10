@@ -1,6 +1,8 @@
 package com.review.worker.gateway;
 
 import com.review.worker.error.GatewayUnavailableException;
+import com.review.worker.gateway.dto.AnnounceRequest;
+import com.review.worker.gateway.dto.AnnounceResponse;
 import com.review.worker.gateway.dto.ClaimRequest;
 import com.review.worker.gateway.dto.ClaimResponse;
 import com.review.worker.gateway.dto.FailRequest;
@@ -144,6 +146,61 @@ public class GatewayClient {
             throw mapServerError("reportFailure", e);
         } catch (ResourceAccessException e) {
             throw new GatewayUnavailableException("Gateway unreachable while reporting failure (jobId=" + jobId + ")", e);
+        }
+    }
+
+    /**
+     * {@code POST /backends/announce} (Backend Self-Registration, architecture §4.2). Called once, before
+     * {@code workerLoop.start()}, only when {@code backend.url} is configured.
+     *
+     * <p><b>F-BSR-05: the fatal/non-fatal split is an explicit allowlist on both sides, with fail-fast as
+     * the default</b> — not, as an earlier version of this method had it, an explicit allowlist of fatal
+     * codes with retry-forever as the default. {@code 403}/{@code 404} are the only codes that mean "this
+     * Gateway build does not do self-registration" (BSQ-18) and are non-fatal (WARN, legacy mode). {@code
+     * 429} is the only genuinely transient {@code 4xx} and goes through {@link #mapServerError}
+     * (retried). <b>Every other {@code 4xx} is fatal by default</b> — a status code this method does not
+     * specifically recognize is far more likely to be a real client-side problem (e.g. a wrong/missing
+     * bearer token, {@code 401}) than a transient server condition, and retrying it forever produces a
+     * Worker that never starts, never exits, and emits a misleading "Gateway unavailable" WARN instead of
+     * a fail-fast, named-cause startup error. {@code 5xx} (including {@code 503 BACKEND_REGISTRY_FULL},
+     * F-BSR-04 — a transient Gateway-side capacity condition, not a Worker misconfiguration) and a
+     * connection failure remain retried, unchanged.
+     *
+     * @throws GatewayUnavailableException on {@code 429}, a connection failure, or a {@code 5xx} from the
+     *                                      Gateway.
+     */
+    public AnnounceOutcome announce(AnnounceRequest request) {
+        try {
+            AnnounceResponse response = gatewayRestClient.post()
+                    .uri("/backends/announce")
+                    .body(request)
+                    .retrieve()
+                    .body(AnnounceResponse.class);
+            log.info("Backend announce accepted (name={}, status={}, created={})",
+                    response == null ? null : response.name(),
+                    response == null ? null : response.status(),
+                    response != null && response.created());
+            return AnnounceOutcome.accepted(response);
+        } catch (RestClientResponseException e) {
+            int statusCode = e.getStatusCode().value();
+            if (statusCode == 403 || statusCode == 404) {
+                log.warn("Backend announce rejected, non-fatal (status={})", statusCode);
+                return AnnounceOutcome.rejectedNonFatal(statusCode);
+            }
+            if (statusCode == 429) {
+                // The one genuinely transient 4xx -- rate-limited, not misconfigured. Retry like a 5xx.
+                throw mapServerError("announce", e);
+            }
+            if (statusCode >= 400 && statusCode < 500) {
+                // F-BSR-05: every other 4xx is fatal by default (was: retry-forever by default, with only
+                // 400/409/422 enumerated as fatal -- which left 401, the single most common real Worker
+                // misconfiguration, wedging startup behind a misleading "Gateway unavailable" WARN).
+                log.warn("Backend announce rejected, fatal (status={})", statusCode);
+                return AnnounceOutcome.rejectedFatal(statusCode);
+            }
+            throw mapServerError("announce", e);
+        } catch (ResourceAccessException e) {
+            throw new GatewayUnavailableException("Gateway unreachable while announcing this backend", e);
         }
     }
 

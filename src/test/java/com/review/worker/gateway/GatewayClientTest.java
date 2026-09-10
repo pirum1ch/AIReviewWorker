@@ -5,6 +5,7 @@ import ch.qos.logback.classic.Logger;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
 import com.review.worker.error.GatewayUnavailableException;
+import com.review.worker.gateway.dto.AnnounceRequest;
 import com.review.worker.gateway.dto.ResultRequest;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -252,6 +253,186 @@ class GatewayClientTest {
         assertThatThrownBy(() -> gatewayClient.submitResult(42, new ResultRequest("worker-1", "raw", 1, 1, 1L, "m", null)))
                 .isInstanceOf(GatewayUnavailableException.class);
         mockServer.verify();
+    }
+
+    // ---- Backend Self-Registration: announce ----
+
+    @Test
+    void announceReturnsAcceptedOn200() {
+        mockServer.expect(requestTo("https://gateway.test/backends/announce"))
+                .andExpect(method(org.springframework.http.HttpMethod.POST))
+                .andExpect(header("Authorization", "Bearer " + BEARER_TOKEN))
+                .andRespond(withSuccess("{\"name\":\"mac-mini-01\",\"status\":\"ACTIVE\",\"created\":true}",
+                        MediaType.APPLICATION_JSON));
+
+        AnnounceOutcome outcome = gatewayClient.announce(
+                new AnnounceRequest("mac-mini-01", "worker-1", "http://192.168.1.50:8080", "qwen2.5-coder"));
+
+        assertThat(outcome.status()).isEqualTo(AnnounceOutcome.AnnounceStatus.ACCEPTED);
+        assertThat(outcome.response().name()).isEqualTo("mac-mini-01");
+        assertThat(outcome.response().status()).isEqualTo("ACTIVE");
+        assertThat(outcome.response().created()).isTrue();
+        mockServer.verify();
+    }
+
+    @Test
+    void announceReturnsAcceptedWithMaintenanceStatusOnAnUpdate() {
+        mockServer.expect(requestTo("https://gateway.test/backends/announce"))
+                .andRespond(withSuccess("{\"name\":\"mac-mini-01\",\"status\":\"MAINTENANCE\",\"created\":false}",
+                        MediaType.APPLICATION_JSON));
+
+        AnnounceOutcome outcome = gatewayClient.announce(
+                new AnnounceRequest("mac-mini-01", "worker-1", "http://192.168.1.50:8080", "qwen2.5-coder"));
+
+        assertThat(outcome.status()).isEqualTo(AnnounceOutcome.AnnounceStatus.ACCEPTED);
+        assertThat(outcome.response().status()).isEqualTo("MAINTENANCE");
+        assertThat(outcome.response().created()).isFalse();
+    }
+
+    @Test
+    void announceReturnsRejectedNonFatalOn403() {
+        mockServer.expect(requestTo("https://gateway.test/backends/announce"))
+                .andRespond(withStatus(org.springframework.http.HttpStatus.FORBIDDEN));
+
+        AnnounceOutcome outcome = gatewayClient.announce(
+                new AnnounceRequest("mac-mini-01", "worker-1", "http://192.168.1.50:8080", "qwen2.5-coder"));
+
+        assertThat(outcome.status()).isEqualTo(AnnounceOutcome.AnnounceStatus.REJECTED_NONFATAL);
+        assertThat(outcome.statusCode()).isEqualTo(403);
+        assertThat(outcome.response()).isNull();
+    }
+
+    @Test
+    void announceReturnsRejectedNonFatalOn404() {
+        mockServer.expect(requestTo("https://gateway.test/backends/announce"))
+                .andRespond(withStatus(org.springframework.http.HttpStatus.NOT_FOUND));
+
+        AnnounceOutcome outcome = gatewayClient.announce(
+                new AnnounceRequest("mac-mini-01", "worker-1", "http://192.168.1.50:8080", "qwen2.5-coder"));
+
+        assertThat(outcome.status()).isEqualTo(AnnounceOutcome.AnnounceStatus.REJECTED_NONFATAL);
+        assertThat(outcome.statusCode()).isEqualTo(404);
+    }
+
+    @Test
+    void announceReturnsRejectedFatalOn400() {
+        // QA fix: a malformed backend.id/worker.id/llama.model (the Gateway's @Pattern/@Size bean
+        // validation on AnnounceBackendRequest -- the first time these self-declared identifiers are
+        // ever validated) must be treated exactly like 409/422, never fall through to mapServerError()
+        // and be retried forever as if the Gateway were merely unreachable.
+        mockServer.expect(requestTo("https://gateway.test/backends/announce"))
+                .andRespond(withStatus(org.springframework.http.HttpStatus.BAD_REQUEST));
+
+        AnnounceOutcome outcome = gatewayClient.announce(
+                new AnnounceRequest("mac-mini-01", "worker-1", "http://192.168.1.50:8080", "qwen2.5-coder"));
+
+        assertThat(outcome.status()).isEqualTo(AnnounceOutcome.AnnounceStatus.REJECTED_FATAL);
+        assertThat(outcome.statusCode()).isEqualTo(400);
+    }
+
+    @Test
+    void announceReturnsRejectedFatalOn409() {
+        mockServer.expect(requestTo("https://gateway.test/backends/announce"))
+                .andRespond(withStatus(org.springframework.http.HttpStatus.CONFLICT));
+
+        AnnounceOutcome outcome = gatewayClient.announce(
+                new AnnounceRequest("mac-mini-01", "worker-1", "http://192.168.1.50:8080", "qwen2.5-coder"));
+
+        assertThat(outcome.status()).isEqualTo(AnnounceOutcome.AnnounceStatus.REJECTED_FATAL);
+        assertThat(outcome.statusCode()).isEqualTo(409);
+    }
+
+    @Test
+    void announceReturnsRejectedFatalOn422() {
+        mockServer.expect(requestTo("https://gateway.test/backends/announce"))
+                .andRespond(withStatus(org.springframework.http.HttpStatus.UNPROCESSABLE_ENTITY));
+
+        AnnounceOutcome outcome = gatewayClient.announce(
+                new AnnounceRequest("mac-mini-01", "worker-1", "http://192.168.1.50:8080", "qwen2.5-coder"));
+
+        assertThat(outcome.status()).isEqualTo(AnnounceOutcome.AnnounceStatus.REJECTED_FATAL);
+        assertThat(outcome.statusCode()).isEqualTo(422);
+    }
+
+    @Test
+    void announceReturnsRejectedFatalOn401() {
+        // F-BSR-05: a wrong/missing bearer token (GATEWAY_API_KEY not matching the Gateway's
+        // WORKER_TOKEN) is the single most common real Worker misconfiguration -- it must be fatal, not
+        // fall through to the old "unenumerated 4xx -> retry forever" default.
+        mockServer.expect(requestTo("https://gateway.test/backends/announce"))
+                .andRespond(withStatus(org.springframework.http.HttpStatus.UNAUTHORIZED));
+
+        AnnounceOutcome outcome = gatewayClient.announce(
+                new AnnounceRequest("mac-mini-01", "worker-1", "http://192.168.1.50:8080", "qwen2.5-coder"));
+
+        assertThat(outcome.status()).isEqualTo(AnnounceOutcome.AnnounceStatus.REJECTED_FATAL);
+        assertThat(outcome.statusCode()).isEqualTo(401);
+    }
+
+    @Test
+    void announceReturnsRejectedFatalOnAnUnenumeratedFourHundredStatus() {
+        // F-BSR-05: the default for any 4xx this method does not specifically recognize is now fatal
+        // (fail fast), not retry-forever -- proven here with a status neither this fix nor its
+        // predecessor names explicitly (405), so it can only pass through the ">=400 && <500" branch.
+        mockServer.expect(requestTo("https://gateway.test/backends/announce"))
+                .andRespond(withStatus(org.springframework.http.HttpStatus.METHOD_NOT_ALLOWED));
+
+        AnnounceOutcome outcome = gatewayClient.announce(
+                new AnnounceRequest("mac-mini-01", "worker-1", "http://192.168.1.50:8080", "qwen2.5-coder"));
+
+        assertThat(outcome.status()).isEqualTo(AnnounceOutcome.AnnounceStatus.REJECTED_FATAL);
+        assertThat(outcome.statusCode()).isEqualTo(405);
+    }
+
+    @Test
+    void announceThrowsGatewayUnavailableOn429() {
+        // 429 is the one genuinely transient 4xx (rate-limited, not misconfigured) -- retried like a 5xx.
+        mockServer.expect(requestTo("https://gateway.test/backends/announce"))
+                .andRespond(withStatus(org.springframework.http.HttpStatus.TOO_MANY_REQUESTS));
+
+        assertThatThrownBy(() -> gatewayClient.announce(
+                new AnnounceRequest("mac-mini-01", "worker-1", "http://192.168.1.50:8080", "qwen2.5-coder")))
+                .isInstanceOf(GatewayUnavailableException.class);
+        mockServer.verify();
+    }
+
+    @Test
+    void announceThrowsGatewayUnavailableOn503RegistryFull() {
+        // F-BSR-04: BACKEND_REGISTRY_FULL is a transient Gateway-side capacity condition, not a
+        // permanent Worker misconfiguration -- the Gateway maps it to 503, which this method must bucket
+        // with "retry with backoff" (GatewayUnavailableException), the same bucket as any other 5xx, not
+        // with REJECTED_FATAL.
+        mockServer.expect(requestTo("https://gateway.test/backends/announce"))
+                .andRespond(withStatus(org.springframework.http.HttpStatus.SERVICE_UNAVAILABLE));
+
+        assertThatThrownBy(() -> gatewayClient.announce(
+                new AnnounceRequest("mac-mini-01", "worker-1", "http://192.168.1.50:8080", "qwen2.5-coder")))
+                .isInstanceOf(GatewayUnavailableException.class);
+        mockServer.verify();
+    }
+
+    @Test
+    void announceThrowsGatewayUnavailableOn5xx() {
+        mockServer.expect(requestTo("https://gateway.test/backends/announce"))
+                .andRespond(withServerError());
+
+        assertThatThrownBy(() -> gatewayClient.announce(
+                new AnnounceRequest("mac-mini-01", "worker-1", "http://192.168.1.50:8080", "qwen2.5-coder")))
+                .isInstanceOf(GatewayUnavailableException.class);
+        mockServer.verify();
+    }
+
+    @Test
+    void announceLogsNoBearerToken() {
+        mockServer.expect(requestTo("https://gateway.test/backends/announce"))
+                .andRespond(withSuccess("{\"name\":\"mac-mini-01\",\"status\":\"ACTIVE\",\"created\":true}",
+                        MediaType.APPLICATION_JSON));
+
+        gatewayClient.announce(
+                new AnnounceRequest("mac-mini-01", "worker-1", "http://192.168.1.50:8080", "qwen2.5-coder"));
+
+        List<String> allMessages = logAppender.list.stream().map(ILoggingEvent::getFormattedMessage).toList();
+        assertThat(allMessages).noneMatch(msg -> msg.contains(BEARER_TOKEN));
     }
 
     @Test

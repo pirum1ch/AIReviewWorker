@@ -38,6 +38,11 @@ services:
       LLAMA_ENABLE_THINKING: ${LLAMA_ENABLE_THINKING:-true}
       WORKER_HEARTBEAT_INTERVAL_SEC: ${WORKER_HEARTBEAT_INTERVAL_SEC:-60}
       WORKER_MAX_CONSTRAINT_BYTES: ${WORKER_MAX_CONSTRAINT_BYTES:-69632}
+      # --- Backend Self-Registration: optional, unset by default. The GATEWAY-reachable address for this
+      #     backend (LAN, not loopback) -- distinct from LLAMA_URL above, which is where this Worker
+      #     process itself connects. Presence is the only toggle; requires the Gateway's own
+      #     gateway.backend.self-registration.enabled=true. Leave unset for the legacy admin-API/SQL path.
+      BACKEND_URL: ${BACKEND_URL:-}
     # NO ports: -- Actuator is loopback-only by design (server.address 127.0.0.1, WSR-12/FW-01).
     #   docker compose exec worker curl -s http://127.0.0.1:8081/actuator/health
     # volumes:  # uncomment if the Gateway's reverse proxy presents a private/internal-CA certificate
