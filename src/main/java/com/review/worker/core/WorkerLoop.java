@@ -45,7 +45,6 @@ import java.util.concurrent.atomic.AtomicBoolean;
 public class WorkerLoop {
 
     private static final Logger log = LoggerFactory.getLogger(WorkerLoop.class);
-    private static final long MAX_BACKOFF_MS = 60_000L;
     private static final String THREAD_NAME = "worker-loop";
 
     /**
@@ -212,9 +211,7 @@ public class WorkerLoop {
     }
 
     private long nextBackoff(long previousMs) {
-        long base = Math.max(properties.getNetwork().getPollIntervalMs(), 1);
-        long next = previousMs <= 0 ? base : previousMs * 2;
-        return Math.min(next, MAX_BACKOFF_MS);
+        return CappedBackoff.next(previousMs, properties.getNetwork().getPollIntervalMs());
     }
 
     /**
