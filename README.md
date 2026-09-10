@@ -75,23 +75,38 @@ main thread, inside `SpringApplication.run()`, after context refresh but before 
   - **Accepted (2xx):** INFO logging `name`/`status`/`created`; if the *effective* status the Gateway
     returns is not `ACTIVE` (e.g. an operator parked it `MAINTENANCE`/`OFFLINE`), an additional WARN that
     no jobs will be dispatched until an operator reactivates it. Either way, `workerLoop.start()` runs next.
-  - **Gateway unreachable / 5xx (`GatewayUnavailableException`):** WARN, then retry forever with the same
-    capped-exponential backoff the claim loop uses (base `network.poll-interval-ms`, cap 60s,
+  - **Gateway unreachable / `5xx` / `429` (`GatewayUnavailableException`):** WARN, then retry forever with
+    the same capped-exponential backoff the claim loop uses (base `network.poll-interval-ms`, cap 60s,
     `core.CappedBackoff`) — the loop never starts until announce succeeds or the process is asked to stop.
     This retry sleeps in short slices and checks a shutdown signal (set from a `ContextClosedEvent`
     listener) between them, so a `SIGTERM` during this window still terminates promptly instead of
     requiring `SIGKILL` — a plain `Thread.sleep` loop here would not otherwise be interruptible by the
-    JVM's normal shutdown hook, since the context has not finished starting yet.
+    JVM's normal shutdown hook, since the context has not finished starting yet. `503
+    BACKEND_REGISTRY_FULL` (the Gateway's registry is at `BACKEND_MAX_BACKENDS`) lands here deliberately:
+    it is a transient Gateway-side capacity condition, so this Worker comes up by itself the moment an
+    operator decommissions a stale backend or raises the cap.
   - **`403`/`404` — non-fatal, WARN and continue:** this is the ordinary "this Gateway does not do
     self-registration" case (the Gateway's `gateway.backend.self-registration.enabled` is off, the token
     is not the `WORKER` token, or — for `404` — an older Gateway build predates the endpoint). One WARN
     naming the likely cause, then `workerLoop.start()` runs anyway. Deliberately **not** fatal: an operator
     flipping the Gateway's kill switch off must never crash-loop the whole Worker fleet.
-  - **`409`/`422` — fatal, startup fails:** a genuine Worker-side misconfiguration that will not self-heal.
-    `409` means `backend.id` is already owned by a different `worker.id` on the Gateway (check for a
-    copy-pasted `BACKEND_ID` across hosts); `422` means `backend.url` was rejected by the Gateway's host
-    allowlist or was not a bare origin. `WorkerRunner` throws `IllegalStateException` naming the status and
-    the likely cause; the loop never starts.
+  - **Every other `4xx` — fatal, startup fails.** The split is an explicit allowlist on both sides with
+    **fail-fast as the default**: only `403`/`404` (above) and `429` (transient, retried) are exempt, and
+    anything else in the `4xx` range — enumerated or not — is treated as a client-side condition that will
+    never self-heal. `WorkerRunner` throws `IllegalStateException` naming the status and the likely cause;
+    the loop never starts. The named causes:
+
+    | Status | Likely cause named in the startup error |
+    |---|---|
+    | `400` | `backend.id`, `worker.id`, or `llama.model` failed the Gateway's validation — check `BACKEND_ID`/`WORKER_ID`/the model name for length or disallowed characters |
+    | `401` | `GATEWAY_API_KEY` is missing, or is not the Gateway's `WORKER` token |
+    | `409` | `backend.id` is already owned by a different `worker.id` on the Gateway — check for a copy-pasted `BACKEND_ID` across hosts |
+    | `422` | `backend.url` was rejected by the Gateway's host allowlist, or was not a bare origin |
+    | any other `4xx` | generic "the Gateway rejected this announce as a client-side error (`N`)" |
+
+    Retrying any of these forever would produce a Worker that never starts, never exits, and logs a
+    misleading "Gateway unavailable" WARN while the Gateway is perfectly healthy — which is why an
+    unrecognised `4xx` fails fast rather than being assumed transient.
 
 See the Gateway repo's `docs/backend-self-registration-architecture.md` §4 and
 `docs/backend-self-registration-threat-model.md` (BSQ-18/19/20) for the full design and its rationale.
