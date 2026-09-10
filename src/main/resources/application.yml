@@ -51,6 +51,18 @@ gateway:
 
 backend:
   id: ${BACKEND_ID}                # идентификатор backend'а (llama-server), с которым данный Worker работает 1:1 — сообщается Gateway при claim/heartbeat/result
+  # Backend Self-Registration: OPTIONAL, no default. This is the address the GATEWAY connects to for
+  # health-probing this backend (a LAN address it can reach) -- NOT the same setting as llama.url below
+  # (where THIS Worker process itself connects, loopback by default). Its presence is the ONLY toggle for
+  # whether this Worker announces itself on startup (POST /backends/announce) before polling for jobs;
+  # unset (default) means legacy behavior -- registration stays via the Gateway's admin API or raw SQL.
+  # Backend Self-Registration: НЕОБЯЗАТЕЛЬНЫЙ параметр, без значения по умолчанию. Это адрес, по которому
+  # GATEWAY будет проверять состояние (health-probe) данного backend'а (LAN-адрес, достижимый для
+  # Gateway) -- НЕ то же самое, что llama.url ниже (туда подключается сам этот процесс Worker'а, по
+  # умолчанию loopback). Наличие этого значения -- ЕДИНСТВЕННЫЙ переключатель того, объявляет ли Worker
+  # себя Gateway'ю при старте (POST /backends/announce) перед началом опроса job'ов; отсутствие (по
+  # умолчанию) означает прежнее поведение -- регистрация только через admin API Gateway или напрямую в БД.
+  url: ${BACKEND_URL:}
 
 network:
   poll-interval-ms: ${WORKER_POLL_INTERVAL_MS:3000}   # интервал (в миллисекундах) между попытками Worker'а запросить у Gateway новую job через /jobs/claim, когда очередь пуста
