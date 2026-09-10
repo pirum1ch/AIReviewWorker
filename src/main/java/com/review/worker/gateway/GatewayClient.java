@@ -1,6 +1,8 @@
 package com.review.worker.gateway;
 
 import com.review.worker.error.GatewayUnavailableException;
+import com.review.worker.gateway.dto.AnnounceRequest;
+import com.review.worker.gateway.dto.AnnounceResponse;
 import com.review.worker.gateway.dto.ClaimRequest;
 import com.review.worker.gateway.dto.ClaimResponse;
 import com.review.worker.gateway.dto.FailRequest;
@@ -144,6 +146,42 @@ public class GatewayClient {
             throw mapServerError("reportFailure", e);
         } catch (ResourceAccessException e) {
             throw new GatewayUnavailableException("Gateway unreachable while reporting failure (jobId=" + jobId + ")", e);
+        }
+    }
+
+    /**
+     * {@code POST /backends/announce} (Backend Self-Registration, architecture §4.2). Called once, before
+     * {@code workerLoop.start()}, only when {@code backend.url} is configured. {@code 403}/{@code 404} and
+     * {@code 409}/{@code 422} are both ordinary, expected outcomes — never exceptions — per
+     * {@link AnnounceOutcome}'s javadoc (BSQ-18); only a connection failure or a {@code 5xx} is exceptional.
+     *
+     * @throws GatewayUnavailableException on a connection failure or a 5xx from the Gateway.
+     */
+    public AnnounceOutcome announce(AnnounceRequest request) {
+        try {
+            AnnounceResponse response = gatewayRestClient.post()
+                    .uri("/backends/announce")
+                    .body(request)
+                    .retrieve()
+                    .body(AnnounceResponse.class);
+            log.info("Backend announce accepted (name={}, status={}, created={})",
+                    response == null ? null : response.name(),
+                    response == null ? null : response.status(),
+                    response != null && response.created());
+            return AnnounceOutcome.accepted(response);
+        } catch (RestClientResponseException e) {
+            int statusCode = e.getStatusCode().value();
+            if (statusCode == 403 || statusCode == 404) {
+                log.warn("Backend announce rejected, non-fatal (status={})", statusCode);
+                return AnnounceOutcome.rejectedNonFatal(statusCode);
+            }
+            if (statusCode == 409 || statusCode == 422) {
+                log.warn("Backend announce rejected, fatal (status={})", statusCode);
+                return AnnounceOutcome.rejectedFatal(statusCode);
+            }
+            throw mapServerError("announce", e);
+        } catch (ResourceAccessException e) {
+            throw new GatewayUnavailableException("Gateway unreachable while announcing this backend", e);
         }
     }
 
