@@ -140,16 +140,19 @@ public class WorkerRunner implements ApplicationRunner, ApplicationListener<Cont
                         + "(register this backend via the Gateway's admin API or SQL)", statusCode, cause);
                 return true;
             }
-            // 400/409/422 are this Worker's own misconfiguration and will never self-heal -- fail startup loudly.
+            // F-BSR-05: 401 and every other unenumerated 4xx (not just 400/409/422) are this Worker's own
+            // misconfiguration and will never self-heal -- fail startup loudly rather than retry forever.
             case REJECTED_FATAL -> {
                 int statusCode = outcome.statusCode();
                 String cause = switch (statusCode) {
                     case 400 -> "backend.id, worker.id, or llama.model failed the Gateway's validation (400) -- "
                             + "check BACKEND_ID/WORKER_ID/the model name for length or disallowed characters";
+                    case 401 -> "GATEWAY_API_KEY is missing or is not the Gateway's WORKER token (401)";
                     case 409 -> "backend.id is already owned by a different worker.id on the Gateway (409) -- "
                             + "check for a copy-pasted BACKEND_ID across hosts";
-                    default -> "backend.url was rejected by the Gateway's host allowlist, or was not a bare "
+                    case 422 -> "backend.url was rejected by the Gateway's host allowlist, or was not a bare "
                             + "origin (422)";
+                    default -> "the Gateway rejected this announce as a client-side error (" + statusCode + ")";
                 };
                 throw new IllegalStateException("Backend self-registration failed (" + statusCode + "): " + cause);
             }

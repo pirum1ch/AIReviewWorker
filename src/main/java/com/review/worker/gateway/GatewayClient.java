@@ -151,11 +151,23 @@ public class GatewayClient {
 
     /**
      * {@code POST /backends/announce} (Backend Self-Registration, architecture §4.2). Called once, before
-     * {@code workerLoop.start()}, only when {@code backend.url} is configured. {@code 403}/{@code 404} and
-     * {@code 400}/{@code 409}/{@code 422} are both ordinary, expected outcomes — never exceptions — per
-     * {@link AnnounceOutcome}'s javadoc (BSQ-18); only a connection failure or a {@code 5xx} is exceptional.
+     * {@code workerLoop.start()}, only when {@code backend.url} is configured.
      *
-     * @throws GatewayUnavailableException on a connection failure or a 5xx from the Gateway.
+     * <p><b>F-BSR-05: the fatal/non-fatal split is an explicit allowlist on both sides, with fail-fast as
+     * the default</b> — not, as an earlier version of this method had it, an explicit allowlist of fatal
+     * codes with retry-forever as the default. {@code 403}/{@code 404} are the only codes that mean "this
+     * Gateway build does not do self-registration" (BSQ-18) and are non-fatal (WARN, legacy mode). {@code
+     * 429} is the only genuinely transient {@code 4xx} and goes through {@link #mapServerError}
+     * (retried). <b>Every other {@code 4xx} is fatal by default</b> — a status code this method does not
+     * specifically recognize is far more likely to be a real client-side problem (e.g. a wrong/missing
+     * bearer token, {@code 401}) than a transient server condition, and retrying it forever produces a
+     * Worker that never starts, never exits, and emits a misleading "Gateway unavailable" WARN instead of
+     * a fail-fast, named-cause startup error. {@code 5xx} (including {@code 503 BACKEND_REGISTRY_FULL},
+     * F-BSR-04 — a transient Gateway-side capacity condition, not a Worker misconfiguration) and a
+     * connection failure remain retried, unchanged.
+     *
+     * @throws GatewayUnavailableException on {@code 429}, a connection failure, or a {@code 5xx} from the
+     *                                      Gateway.
      */
     public AnnounceOutcome announce(AnnounceRequest request) {
         try {
@@ -175,15 +187,14 @@ public class GatewayClient {
                 log.warn("Backend announce rejected, non-fatal (status={})", statusCode);
                 return AnnounceOutcome.rejectedNonFatal(statusCode);
             }
-            // QA fix: 400 (VALIDATION_ERROR -- e.g. backend.id/worker.id/llama.model failing the
-            // Gateway's @Pattern/@Size bean validation, the FIRST time these self-declared identifiers
-            // are ever validated against a fixed charset/length) is a genuine, non-self-healing Worker
-            // misconfiguration exactly like 409/422 -- it must never fall through to mapServerError()
-            // below, which would wrap it as GatewayUnavailableException and have announceWithRetry()
-            // retry it forever with capped backoff, hanging Worker startup indefinitely behind a
-            // misleading "Gateway unavailable" WARN instead of the fail-fast, named-cause startup error
-            // BSQ-18/architecture §4.3 requires for every terminal case.
-            if (statusCode == 400 || statusCode == 409 || statusCode == 422) {
+            if (statusCode == 429) {
+                // The one genuinely transient 4xx -- rate-limited, not misconfigured. Retry like a 5xx.
+                throw mapServerError("announce", e);
+            }
+            if (statusCode >= 400 && statusCode < 500) {
+                // F-BSR-05: every other 4xx is fatal by default (was: retry-forever by default, with only
+                // 400/409/422 enumerated as fatal -- which left 401, the single most common real Worker
+                // misconfiguration, wedging startup behind a misleading "Gateway unavailable" WARN).
                 log.warn("Backend announce rejected, fatal (status={})", statusCode);
                 return AnnounceOutcome.rejectedFatal(statusCode);
             }

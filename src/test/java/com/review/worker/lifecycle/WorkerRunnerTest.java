@@ -222,6 +222,22 @@ class WorkerRunnerTest {
         verify(workerLoop, never()).start();
     }
 
+    @Test
+    void rejected401ThrowsAndNeverStartsTheLoop() {
+        // F-BSR-05: a wrong/missing bearer token must fail startup with a message naming the likely
+        // cause (GATEWAY_API_KEY), not retry forever behind a misleading "Gateway unavailable" WARN.
+        WorkerProperties properties = propertiesWithBackendUrl("http://192.168.1.50:8080");
+        when(gatewayClient.announce(any())).thenReturn(AnnounceOutcome.rejectedFatal(401));
+        WorkerRunner runner = new WorkerRunner(workerLoop, gatewayClient, properties);
+
+        assertThatThrownBy(() -> runner.run(args))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("401")
+                .hasMessageContaining("GATEWAY_API_KEY");
+
+        verify(workerLoop, never()).start();
+    }
+
     // ---- Gateway unreachable: retries with capped backoff, then succeeds ----
 
     @Test
