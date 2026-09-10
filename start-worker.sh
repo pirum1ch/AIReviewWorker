@@ -3,6 +3,9 @@
 #
 # Required vars (README.md §5.1) are read from a .env file next to this script if present;
 # anything still missing is prompted for interactively. Already-exported env vars win over .env.
+# BACKEND_URL (README.md §5.2, Backend Self-Registration) is optional and never prompted for -- set
+# it in .env to announce this backend to the Gateway automatically at startup, leave it unset to
+# register the backend via the Gateway's admin API or SQL instead.
 #
 # Usage:
 #   ./start-worker.sh            # build only if target/llm-worker.jar is missing, then run
@@ -67,6 +70,13 @@ echo "  WORKER_ID=$WORKER_ID"
 echo "  BACKEND_ID=$BACKEND_ID"
 echo "  LLAMA_MODEL=$LLAMA_MODEL"
 echo "  LLAMA_URL=${LLAMA_URL:-http://127.0.0.1:8000 (default)}"
+if [ -n "${BACKEND_URL:-}" ]; then
+  echo "  BACKEND_URL=$BACKEND_URL (self-registration enabled -- requires the Gateway's"
+  echo "    gateway.backend.self-registration.enabled=true and a matching allowed-host-pattern)"
+else
+  echo "  BACKEND_URL=(not set -- self-registration disabled, register this backend via the"
+  echo "    Gateway's admin API or SQL instead)"
+fi
 echo
 
 JAR="target/llm-worker.jar"
