@@ -85,8 +85,13 @@ if [ ! -f "$JAR" ] || [ "${1:-}" = "--rebuild" ]; then
     echo "mvn not found on PATH (need Maven 3.9+ to build). Install it, or place a pre-built $JAR here." >&2
     exit 1
   }
-  echo "Building $JAR (mvn -q verify)..."
-  mvn -q verify
+  echo "Building $JAR (mvn -q package -DskipTests)..."
+  # Skips tests deliberately: this is a deploy script for an already-reviewed, already-tested build
+  # (the project's CI runs the full suite on every PR/merge), not a CI script -- running ~200 tests
+  # (embedded servers, mock HTTP clients, timing-sensitive backoff/retry tests) on every redeploy of
+  # a worker host adds real time and noise for no correctness benefit here. Run `mvn verify` yourself
+  # first if you've made local changes you actually want tested before deploying them.
+  mvn -q package -DskipTests
 fi
 
 echo "Starting Worker..."
