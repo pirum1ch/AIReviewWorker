@@ -152,7 +152,7 @@ public class GatewayClient {
     /**
      * {@code POST /backends/announce} (Backend Self-Registration, architecture §4.2). Called once, before
      * {@code workerLoop.start()}, only when {@code backend.url} is configured. {@code 403}/{@code 404} and
-     * {@code 409}/{@code 422} are both ordinary, expected outcomes — never exceptions — per
+     * {@code 400}/{@code 409}/{@code 422} are both ordinary, expected outcomes — never exceptions — per
      * {@link AnnounceOutcome}'s javadoc (BSQ-18); only a connection failure or a {@code 5xx} is exceptional.
      *
      * @throws GatewayUnavailableException on a connection failure or a 5xx from the Gateway.
@@ -175,7 +175,15 @@ public class GatewayClient {
                 log.warn("Backend announce rejected, non-fatal (status={})", statusCode);
                 return AnnounceOutcome.rejectedNonFatal(statusCode);
             }
-            if (statusCode == 409 || statusCode == 422) {
+            // QA fix: 400 (VALIDATION_ERROR -- e.g. backend.id/worker.id/llama.model failing the
+            // Gateway's @Pattern/@Size bean validation, the FIRST time these self-declared identifiers
+            // are ever validated against a fixed charset/length) is a genuine, non-self-healing Worker
+            // misconfiguration exactly like 409/422 -- it must never fall through to mapServerError()
+            // below, which would wrap it as GatewayUnavailableException and have announceWithRetry()
+            // retry it forever with capped backoff, hanging Worker startup indefinitely behind a
+            // misleading "Gateway unavailable" WARN instead of the fail-fast, named-cause startup error
+            // BSQ-18/architecture §4.3 requires for every terminal case.
+            if (statusCode == 400 || statusCode == 409 || statusCode == 422) {
                 log.warn("Backend announce rejected, fatal (status={})", statusCode);
                 return AnnounceOutcome.rejectedFatal(statusCode);
             }

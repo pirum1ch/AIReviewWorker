@@ -176,7 +176,23 @@ class WorkerRunnerTest {
         assertThat(warnMessages()).anyMatch(msg -> msg.contains("404") && msg.contains("legacy mode"));
     }
 
-    // ---- 409/422 are fatal: startup must fail, loop must never start ----
+    // ---- 400/409/422 are fatal: startup must fail, loop must never start ----
+
+    @Test
+    void rejected400ThrowsAndNeverStartsTheLoop() {
+        // QA fix: a 400 (backend.id/worker.id/llama.model failing the Gateway's bean validation) must
+        // fail startup exactly like 409/422, not retry forever as if the Gateway were unreachable.
+        WorkerProperties properties = propertiesWithBackendUrl("http://192.168.1.50:8080");
+        when(gatewayClient.announce(any())).thenReturn(AnnounceOutcome.rejectedFatal(400));
+        WorkerRunner runner = new WorkerRunner(workerLoop, gatewayClient, properties);
+
+        assertThatThrownBy(() -> runner.run(args))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("400")
+                .hasMessageContaining("worker.id");
+
+        verify(workerLoop, never()).start();
+    }
 
     @Test
     void rejected409ThrowsAndNeverStartsTheLoop() {

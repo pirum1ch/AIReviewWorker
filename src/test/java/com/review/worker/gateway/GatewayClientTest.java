@@ -315,6 +315,22 @@ class GatewayClientTest {
     }
 
     @Test
+    void announceReturnsRejectedFatalOn400() {
+        // QA fix: a malformed backend.id/worker.id/llama.model (the Gateway's @Pattern/@Size bean
+        // validation on AnnounceBackendRequest -- the first time these self-declared identifiers are
+        // ever validated) must be treated exactly like 409/422, never fall through to mapServerError()
+        // and be retried forever as if the Gateway were merely unreachable.
+        mockServer.expect(requestTo("https://gateway.test/backends/announce"))
+                .andRespond(withStatus(org.springframework.http.HttpStatus.BAD_REQUEST));
+
+        AnnounceOutcome outcome = gatewayClient.announce(
+                new AnnounceRequest("mac-mini-01", "worker-1", "http://192.168.1.50:8080", "qwen2.5-coder"));
+
+        assertThat(outcome.status()).isEqualTo(AnnounceOutcome.AnnounceStatus.REJECTED_FATAL);
+        assertThat(outcome.statusCode()).isEqualTo(400);
+    }
+
+    @Test
     void announceReturnsRejectedFatalOn409() {
         mockServer.expect(requestTo("https://gateway.test/backends/announce"))
                 .andRespond(withStatus(org.springframework.http.HttpStatus.CONFLICT));
