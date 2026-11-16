@@ -31,15 +31,17 @@ import java.util.Locale;
  *   <li>WSR-09: {@code worker.allow-insecure-gateway} is honored only when {@code gateway.url}'s host is
  *       loopback; a non-loopback host with a plain {@code http://} URL always fails startup, flag or
  *       not.</li>
- *   <li>WSR-12: the <em>effective</em> actuator bind address must resolve to a loopback address; a blank
- *       or off-loopback value fails startup. This is the one rule here that reads properties outside the
- *       {@code gateway/worker/.../prompt} tree, via direct {@code @Value} injection — and it deliberately
- *       computes which property is actually in effect (per Spring Boot's documented behavior, actuator
- *       follows {@code management.server.address} only when {@code management.server.port} is a
- *       <em>distinct</em> port from {@code server.port}; otherwise it follows {@code server.address})
- *       rather than always validating {@code management.server.address} in isolation, which would be
- *       false assurance (FW-01) whenever no distinct management port is configured (the Worker's own
- *       {@code application.yml} default).</li>
+ *   <li>WSR-12: the <em>effective</em> actuator bind address must resolve to a loopback address by
+ *       default; a blank value fails startup, and an off-loopback value (including {@code 0.0.0.0} /
+ *       {@code ::} / {@code *}) fails startup unless it is an explicit all-interfaces address recognized
+ *       by {@link #isPermittedBindHost} (opt-in relaxation — see {@code application.yml}). This is the
+ *       one rule here that reads properties outside the {@code gateway/worker/.../prompt} tree, via
+ *       direct {@code @Value} injection — and it deliberately computes which property is actually in
+ *       effect (per Spring Boot's documented behavior, actuator follows {@code management.server.address}
+ *       only when {@code management.server.port} is a <em>distinct</em> port from {@code server.port};
+ *       otherwise it follows {@code server.address}) rather than always validating
+ *       {@code management.server.address} in isolation, which would be false assurance (FW-01) whenever
+ *       no distinct management port is configured (the Worker's own {@code application.yml} default).</li>
  * </ul>
  *
  * <p>Basic per-field constraints (non-blank, positive) are also declared as JSR-380 annotations
@@ -61,6 +63,8 @@ public class WorkerProperties {
     private static final int HEARTBEAT_STALENESS_CEILING_SEC = 180;
     private static final int HEARTBEAT_WARN_THRESHOLD_SEC = 90;
     private static final List<String> LOOPBACK_HOSTS = List.of("localhost", "127.0.0.1", "::1", "[::1]");
+    /** Explicit "all interfaces" bind addresses (opt-in security relaxation of WSR-12, see below). */
+    private static final List<String> ALL_INTERFACES_HOSTS = List.of("0.0.0.0", "*", "::");
 
     @Valid
     private final Gateway gateway = new Gateway();
@@ -306,12 +310,32 @@ public class WorkerProperties {
 
         if (effectiveAddress == null || effectiveAddress.isBlank()) {
             throw new IllegalStateException(
-                    effectivePropertyName + " must be set to a loopback address (127.0.0.1) — refusing to start");
+                    effectivePropertyName + " must be set — refusing to start");
         }
-        if (!isLoopbackHost(effectiveAddress.trim())) {
+        if (!isPermittedBindHost(effectiveAddress.trim())) {
             throw new IllegalStateException(
-                    effectivePropertyName + " must be a loopback address (127.0.0.1/::1/localhost) — refusing to start");
+                    effectivePropertyName + " must be a loopback address (127.0.0.1/::1/localhost) or an "
+                            + "explicit all-interfaces address (0.0.0.0/::) — refusing to start");
         }
+    }
+
+    /**
+     * WSR-12 bind check for the actuator's effective address. Loopback is the default and still
+     * required; an explicit all-interfaces address ({@code 0.0.0.0} / {@code ::} / {@code *}) is an
+     * opt-in relaxation — the operator sets it deliberately in {@code application.yml} to expose the
+     * actuator (health/prometheus only) beyond loopback. Connection-target hosts (gateway.url,
+     * llama.url) are validated with {@link #isLoopbackHost}, which never accepts all-interfaces, since
+     * you always connect to a concrete host there.
+     */
+    private static boolean isPermittedBindHost(String host) {
+        if (host == null) {
+            return false;
+        }
+        String normalized = host.trim().toLowerCase(Locale.ROOT);
+        if (ALL_INTERFACES_HOSTS.contains(normalized) || normalized.startsWith("0.0.0.0")) {
+            return true;
+        }
+        return isLoopbackHost(normalized);
     }
 
     private boolean hasDistinctManagementPort() {

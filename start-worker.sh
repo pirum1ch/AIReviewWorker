@@ -94,7 +94,8 @@ if [ ! -f "$JAR" ] || [ "${1:-}" = "--rebuild" ]; then
   mvn -q package -DskipTests
 fi
 
-echo "Starting Worker..."
+export WORKER_HTTP_PORT="${WORKER_HTTP_PORT:-8080}"
+echo "Starting Worker on port ${WORKER_HTTP_PORT}..."
 # -XX:-HeapDumpOnOutOfMemoryError: an OOM heap dump could otherwise persist an in-flight diff/LLM
 # response to disk in plaintext (see README.md §6.1) -- the app only warns if this is missing, it
 # can't enforce it from inside the JVM.

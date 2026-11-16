@@ -229,6 +229,8 @@ class WorkerPropertiesTest {
     // With no distinct management.server.port configured (the Worker's own application.yml default),
     // Spring Boot silently ignores management.server.address and the actuator follows server.address
     // instead (WorkerProperties.validateServerBinding() must track that, not validate the inert key).
+    // The permitted set is loopback (127.0.0.1/::1/localhost) PLUS explicit all-interfaces addresses
+    // (0.0.0.0/::/*, opt-in security relaxation); anything else off-loopback fails startup fast.
 
     @Test
     void blankServerAddressFailsFastWhenNoDistinctManagementPort() {
@@ -239,11 +241,20 @@ class WorkerPropertiesTest {
     }
 
     @Test
-    void nonLoopbackServerAddressFailsFastWhenNoDistinctManagementPort() {
-        WorkerProperties properties = validProperties("0.0.0.0");
+    void realOffLoopbackServerAddressFailsFastWhenNoDistinctManagementPort() {
+        // A genuine off-loopback host (not an all-interfaces wildcard) is still refused.
+        WorkerProperties properties = validProperties("10.0.0.5");
         assertThatThrownBy(properties::validateOnStartup)
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("server.address");
+    }
+
+    @Test
+    void allInterfacesServerAddressVariantsPassWhenNoDistinctManagementPort() {
+        // 0.0.0.0 / * / :: are recognized explicit all-interfaces bindings and are now permitted.
+        assertThatCode(() -> validProperties("0.0.0.0").validateOnStartup()).doesNotThrowAnyException();
+        assertThatCode(() -> validProperties("*").validateOnStartup()).doesNotThrowAnyException();
+        assertThatCode(() -> validProperties("::").validateOnStartup()).doesNotThrowAnyException();
     }
 
     @Test
@@ -253,34 +264,42 @@ class WorkerPropertiesTest {
     }
 
     @Test
-    void nonLoopbackServerAddressStillFailsEvenIfManagementServerAddressLooksLoopback() {
+    void realOffLoopbackServerAddressStillFailsEvenIfManagementServerAddressLooksLoopback() {
         // The false-assurance scenario FW-01 describes: management.server.address is set to a loopback
         // literal, but with no distinct management.server.port it is inert -- the actuator actually binds
-        // via server.address, which is not loopback here, so startup must still fail.
-        WorkerProperties properties = validPropertiesWithBinding("0.0.0.0", "8081", "127.0.0.1", "");
+        // via server.address, which is a real off-loopback host here, so startup must still fail.
+        WorkerProperties properties = validPropertiesWithBinding("10.0.0.5", "8081", "127.0.0.1", "");
         assertThatThrownBy(properties::validateOnStartup)
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("server.address");
     }
 
     @Test
-    void nonLoopbackServerAddressStillFailsWhenManagementPortEqualsServerPort() {
+    void realOffLoopbackServerAddressStillFailsWhenManagementPortEqualsServerPort() {
         // management.server.port explicitly equal to server.port is still "no distinct port" per Spring
         // Boot's own behavior -- must be treated identically to management.server.port being unset.
-        WorkerProperties properties = validPropertiesWithBinding("0.0.0.0", "8081", "127.0.0.1", "8081");
+        WorkerProperties properties = validPropertiesWithBinding("10.0.0.5", "8081", "127.0.0.1", "8081");
         assertThatThrownBy(properties::validateOnStartup)
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("server.address");
     }
 
     @Test
-    void distinctManagementPortWithNonLoopbackManagementAddressFailsFast() {
+    void distinctManagementPortWithOffLoopbackManagementAddressFailsFast() {
         // Once management.server.port genuinely differs from server.port, management.server.address
         // becomes the property that actually controls the actuator's bind address.
-        WorkerProperties properties = validPropertiesWithBinding("127.0.0.1", "8081", "0.0.0.0", "9090");
+        WorkerProperties properties = validPropertiesWithBinding("127.0.0.1", "8081", "10.0.0.5", "9090");
         assertThatThrownBy(properties::validateOnStartup)
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("management.server.address");
+    }
+
+    @Test
+    void distinctManagementPortWithAllInterfacesManagementAddressPasses() {
+        // With a genuinely distinct management.server.port, an explicit all-interfaces address on the
+        // management key is permitted (same opt-in relaxation as on server.address).
+        WorkerProperties properties = validPropertiesWithBinding("127.0.0.1", "8081", "0.0.0.0", "9090");
+        assertThatCode(properties::validateOnStartup).doesNotThrowAnyException();
     }
 
     @Test
@@ -289,14 +308,6 @@ class WorkerPropertiesTest {
         assertThatThrownBy(properties::validateOnStartup)
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("management.server.address");
-    }
-
-    @Test
-    void distinctManagementPortWithLoopbackManagementAddressPasses() {
-        WorkerProperties properties = validPropertiesWithBinding("0.0.0.0", "8081", "127.0.0.1", "9090");
-        // server.address is non-loopback here, but that's fine: with a genuinely distinct management
-        // port, the actuator binds via management.server.address (loopback), not server.address.
-        assertThatCode(properties::validateOnStartup).doesNotThrowAnyException();
     }
 
     @Test
