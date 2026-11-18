@@ -5,7 +5,6 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
-import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -69,7 +68,7 @@ class ChatCompletionRequestSerializationTest {
 
     @Test
     void chatTemplateKwargsIsIncludedOnlyWhenSet() throws Exception {
-        Map<String, Object> noThinking = Map.of("enable_thinking", false);
+        JsonNode noThinking = mapper.valueToTree(java.util.Map.of("enable_thinking", false));
         ChatCompletionRequest request = new ChatCompletionRequest("model-x", List.of(), 0.2, 100, null, null, noThinking);
 
         JsonNode root = mapper.readTree(mapper.writeValueAsString(request));

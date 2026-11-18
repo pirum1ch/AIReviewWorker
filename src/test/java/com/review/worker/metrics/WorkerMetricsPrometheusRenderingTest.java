@@ -1,12 +1,13 @@
 package com.review.worker.metrics;
 
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.boot.test.autoconfigure.actuate.observability.AutoConfigureObservability;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.test.web.server.LocalServerPort;
-import org.springframework.test.context.TestPropertySource;
+import org.springframework.boot.test.web.client.TestRestTemplate;
+import org.springframework.boot.test.web.server.LocalManagementPort;
 import org.springframework.http.ResponseEntity;
-import org.springframework.web.client.RestClient;
+import org.springframework.test.context.TestPropertySource;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -17,6 +18,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * are exercised for real here rather than assumed.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@AutoConfigureObservability
 @TestPropertySource(properties = {
         "gateway.url=https://gateway.internal",
         "gateway.api-key=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -24,25 +26,20 @@ import static org.assertj.core.api.Assertions.assertThat;
         "backend.id=backend-test",
         "llama.url=http://127.0.0.1:8000",
         "llama.model=test-model",
-        // Use the same server port for actuator (management.server.port not set = main port)
+        "management.server.address=127.0.0.1",
+        "management.server.port=0",
         "management.endpoints.web.exposure.include=health,prometheus"
 })
 class WorkerMetricsPrometheusRenderingTest {
 
-    @LocalServerPort
-    private int port;
+    @LocalManagementPort
+    private int managementPort;
 
     @org.springframework.beans.factory.annotation.Autowired
     private WorkerMetrics workerMetrics;
 
-    private RestClient restClient;
-
-    @BeforeEach
-    void setUp() {
-        restClient = RestClient.builder()
-                .baseUrl("http://127.0.0.1:" + port)
-                .build();
-    }
+    @org.springframework.beans.factory.annotation.Autowired
+    private TestRestTemplate restTemplate;
 
     @Test
     void allSixWorkerMetricsRenderWithExactPrometheusNames() {
@@ -52,10 +49,8 @@ class WorkerMetricsPrometheusRenderingTest {
         workerMetrics.incrementGatewayErrors();
         workerMetrics.recordLlamaDuration(java.time.Duration.ofMillis(500));
 
-        ResponseEntity<String> response = restClient.get()
-                .uri("/actuator/prometheus")
-                .retrieve()
-                .toEntity(String.class);
+        ResponseEntity<String> response = restTemplate.getForEntity(
+                "http://127.0.0.1:" + managementPort + "/actuator/prometheus", String.class);
 
         assertThat(response.getStatusCode().is2xxSuccessful()).isTrue();
         String body = response.getBody();

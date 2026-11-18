@@ -1,5 +1,6 @@
 package com.review.worker.llama;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.review.worker.config.WorkerProperties;
 import com.review.worker.core.LlamaResult;
@@ -96,7 +97,7 @@ public class LlamaClient {
      * every request carries {@code chat_template_kwargs: {"enable_thinking": false}}. See
      * {@code WorkerProperties.Llama#isEnableThinking} and {@link ChatCompletionRequest}'s javadoc.
      */
-    private final Map<String, Object> chatTemplateKwargs;
+    private final JsonNode chatTemplateKwargs;
 
     public LlamaClient(@Qualifier("llamaRestClient") RestClient llamaRestClient,
                         HttpClient sharedHttpClient,
@@ -108,7 +109,7 @@ public class LlamaClient {
         this.properties = properties;
         this.chatTemplateKwargs = properties.getLlama().isEnableThinking()
                 ? null
-                : Map.of("enable_thinking", false);
+                : objectMapper.valueToTree(Map.of("enable_thinking", false));
     }
 
     /**
