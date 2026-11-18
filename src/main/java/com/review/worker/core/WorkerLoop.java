@@ -10,6 +10,7 @@ import com.review.worker.gateway.ResultOutcome;
 import com.review.worker.gateway.dto.ClaimResponse;
 import com.review.worker.gateway.dto.FailRequest;
 import com.review.worker.gateway.dto.ResultRequest;
+import com.review.worker.info.WorkerStateHolder;
 import com.review.worker.llama.DecoderConstraint;
 import com.review.worker.llama.DecoderConstraintResolver;
 import com.review.worker.llama.LlamaClient;
@@ -81,6 +82,7 @@ public class WorkerLoop {
     private final HeartbeatScheduler heartbeatScheduler;
     private final WorkerMetrics metrics;
     private final WorkerProperties properties;
+    private final WorkerStateHolder stateHolder;
 
     private final AtomicBoolean shuttingDown = new AtomicBoolean(false);
     private final AtomicBoolean running = new AtomicBoolean(false);
@@ -102,7 +104,8 @@ public class WorkerLoop {
                        DecoderConstraintResolver decoderConstraintResolver,
                        HeartbeatScheduler heartbeatScheduler,
                        WorkerMetrics metrics,
-                       WorkerProperties properties) {
+                       WorkerProperties properties,
+                       WorkerStateHolder stateHolder) {
         this.gatewayClient = gatewayClient;
         this.llamaClient = llamaClient;
         this.promptTemplateService = promptTemplateService;
@@ -110,6 +113,7 @@ public class WorkerLoop {
         this.heartbeatScheduler = heartbeatScheduler;
         this.metrics = metrics;
         this.properties = properties;
+        this.stateHolder = stateHolder;
     }
 
     /** Starts the {@code worker-loop} thread. A no-op if already started. */
@@ -177,6 +181,7 @@ public class WorkerLoop {
 
     private void runLoop() {
         long backoffMs = 0;
+        stateHolder.markIdle();
         try {
             while (!shuttingDown.get()) {
                 Optional<ClaimResponse> claimed;
@@ -204,6 +209,9 @@ public class WorkerLoop {
                 idlePollCount = 0;
                 processJob(claimed.get());
             }
+        } catch (Throwable t) {
+            stateHolder.markError();
+            throw t;
         } finally {
             running.set(false);
             log.info("worker-loop thread exiting");
@@ -249,6 +257,7 @@ public class WorkerLoop {
 
     private void processJob(ClaimResponse job) {
         metrics.incrementJobsTotal();
+        stateHolder.markRunning();
         String workerId = properties.getWorker().getId();
         AbortSignal abortSignal = new AbortSignal();
         currentAbortSignal = abortSignal;
@@ -283,6 +292,7 @@ public class WorkerLoop {
             reportFailureBestEffort(job.jobId(), workerId, reason);
         } finally {
             currentAbortSignal = null;
+            stateHolder.markIdle();
         }
     }
 
@@ -348,6 +358,7 @@ public class WorkerLoop {
         long durationMs = System.currentTimeMillis() - call.startedAtMillis();
         LlamaResult result = llamaClient.parseResponse(httpResponse, prompt.model(), durationMs);
         metrics.recordLlamaDuration(Duration.ofMillis(result.durationMs()));
+        stateHolder.recordCompletion(result.completionTokens(), result.durationMs());
 
         if (abortSignal.isAborted()) {
             log.info("Job aborted after the llama response arrived; discarding it (jobId={})", job.jobId());

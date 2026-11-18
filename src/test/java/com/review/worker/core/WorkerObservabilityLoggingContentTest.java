@@ -237,7 +237,8 @@ class WorkerObservabilityLoggingContentTest {
         workerLoopLogger.addAppender(idleLogAppender);
 
         WorkerLoop loop = new WorkerLoop(idleGatewayClient, llamaClient, promptTemplateService,
-                new com.review.worker.llama.DecoderConstraintResolver(new com.fasterxml.jackson.databind.ObjectMapper(), properties), idleHeartbeatScheduler, metrics, properties);
+                new com.review.worker.llama.DecoderConstraintResolver(new com.fasterxml.jackson.databind.ObjectMapper(), properties), idleHeartbeatScheduler, metrics, properties,
+                new com.review.worker.info.WorkerStateHolder());
         try {
             loop.start();
             long deadline = System.nanoTime() + Duration.ofSeconds(5).toNanos();
@@ -320,7 +321,8 @@ class WorkerObservabilityLoggingContentTest {
         workerLoopLogger.addAppender(logAppender);
 
         WorkerLoop loop = new WorkerLoop(gatewayClient, llamaClient, promptTemplateService,
-                new com.review.worker.llama.DecoderConstraintResolver(new com.fasterxml.jackson.databind.ObjectMapper(), properties), heartbeatScheduler, metrics, properties);
+                new com.review.worker.llama.DecoderConstraintResolver(new com.fasterxml.jackson.databind.ObjectMapper(), properties), heartbeatScheduler, metrics, properties,
+                new com.review.worker.info.WorkerStateHolder());
         try {
             loop.start();
             long deadline = System.nanoTime() + Duration.ofSeconds(5).toNanos();

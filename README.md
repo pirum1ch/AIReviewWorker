@@ -29,6 +29,7 @@ does not do, this document says so explicitly instead of describing aspirational
    - [6.4 Docker Compose](#64-docker-compose)
 7. [Integration scheme](#7-integration-scheme)
 8. [Observability](#8-observability)
+   - [8.3 Info / Admin endpoints (REQ-6/REQ-7)](#83-info--admin-endpoints-req-6req-7)
 9. [Operational notes](#9-operational-notes)
 10. [Adding a prompt version](#10-adding-a-prompt-version)
 
@@ -54,9 +55,7 @@ all queue/retry/dedup/timeout/routing/publish logic lives in the Gateway (see th
   one `Thread` named `worker-loop` — there is no thread pool and no virtual-thread usage; capacity is
   structurally 1 concurrent job per Worker process. A second, per-job plain thread
   (`ScheduledExecutorService` named `worker-heartbeat`) exists only for the duration of one job.
-- **No custom REST API of its own.** The only HTTP surface the Worker itself exposes is Spring Boot
-  Actuator (health + Prometheus metrics, loopback-only — see [§8](#8-observability)); it never accepts
-  business requests from anything.
+- **Minimal HTTP surface of its own.** Spring Boot Actuator (health + Prometheus metrics, loopback `127.0.0.1:8081` only — see [§8](#8-observability)) plus the REQ-6/REQ-7 info/admin endpoints on a separate port (default `127.0.0.1:8082` — see [§8.3](#83-info--admin-endpoints-req-6req-7)). The Worker never accepts business requests (job dispatch, result callbacks, etc.) — those go exclusively through the Gateway.
 
 ## 2. How it works
 
@@ -304,6 +303,11 @@ on any violation below; every failure message names the property only, never its
 | `WORKER_HEARTBEAT_INTERVAL_SEC` | `heartbeat.interval-sec` | `60` | Cadence of `POST /jobs/{id}/heartbeat` while a job is running. **Hard-rejected at startup if `>= 180`** (the Gateway's stale-heartbeat threshold — a misconfiguration here could not otherwise cause every job to self-evict); **logs a WARN if `> 90`** (little margin left). Must also be `> 0`. |
 | `WORKER_HTTP_PORT` | `server.port` | `8081` | Port for the embedded server, which hosts **only** Actuator (see [§8](#8-observability)) — the Worker has no business REST endpoints. |
 | `WORKER_IDLE_SUMMARY_INTERVAL_SEC` | `worker.log.idle-summary-interval-sec` | `300` | Worker Observability & Claim Latency. At most one INFO idle-liveness summary line (`"Idle: no job available in the last N poll(s) (backend=...)"`) per this many seconds while no job is available; the poll counter resets on a successful claim. `0` disables it entirely. Must be `>= 0`. |
+| `WORKER_INFO_PORT` | `info.port` | `8082` | TCP port for the `GET /worker/info|config|models` endpoints ([§8.3](#83-info--admin-endpoints-req-6req-7)). Must be in `[1024, 65535]` and differ from `WORKER_HTTP_PORT`. `0` lets Tomcat pick a random free port (useful in tests). |
+| `WORKER_ADMIN_TOKEN` | `info.admin-token` | unset | Bearer secret for `GET /worker/config` and `GET /worker/models`. When unset those two endpoints return `503 ADMIN_DISABLED`. When set: min 32 characters. Never logged — only `[set]`/`[not set]` is surfaced. Generate with `openssl rand -hex 32`. |
+| `WORKER_INFO_BIND_ADDRESS` | `info.bind-address` | `127.0.0.1` | Bind address for the info/admin connector. Set to `0.0.0.0` only when a Gateway proxy (Option B) or network policy limits external access; requires `WORKER_INFO_UNSAFE_PUBLIC_BIND=true`. |
+| `WORKER_INFO_UNSAFE_PUBLIC_BIND` | `info.unsafe-public-bind` | `false` | Explicit opt-in to bind the info port to all interfaces. Startup fails if `WORKER_INFO_BIND_ADDRESS=0.0.0.0` and this is not `true`. |
+| `WORKER_INFO_MODELS_SCAN_MAX` | `info.models-scan-max` | `500` | Maximum number of files enumerated by `GET /worker/models` in a single call. |
 
 ### 5.3 Hardcoded in `application.yml` (no environment-variable placeholder)
 
@@ -628,6 +632,35 @@ noted):
 | `Heartbeat failed {N} times in a row (jobId=…); aborting fail-safe rather than running blind` | ERROR | Fail-safe abort after 3 consecutive heartbeat failures (`WSR-15`) — the Gateway may believe this job is still running while the Worker has actually given up on it; the Gateway's own heartbeat-timeout sweep will eventually reclaim it. |
 | `llama.url host is not loopback … confirm this is intentional` | WARN (startup only) | Non-default, non-loopback `llama.url` without `LLAMA_ALLOW_NON_LOOPBACK` — confirm this is intentional for the deployment. |
 | `JVM flag -XX:+HeapDumpOnOutOfMemoryError is enabled` | WARN (startup only) | The recommended `-XX:-HeapDumpOnOutOfMemoryError` launch flag is missing — see [§6](#6-deployment). |
+
+### 8.3 Info / Admin endpoints (REQ-6/REQ-7)
+
+A second embedded Tomcat connector (`InfoServerConfig`) starts on `${WORKER_INFO_PORT:8082}`,
+bound to `${WORKER_INFO_BIND_ADDRESS:127.0.0.1}`. `PortIsolationInterceptor` ensures these
+three endpoints cannot be reached on the actuator port (8081) and that `/actuator/**` cannot
+be reached on this port.
+
+| Endpoint | Auth | Description |
+|---|---|---|
+| `GET /worker/info` | None | Engine (`"llama.cpp"`, hardcoded), model, inferred quantization (regex on filename), GPU name (detected at startup via `nvidia-smi`, `null` if unavailable), current tok/s (from last completed job), coarsened status (`AVAILABLE`/`BUSY`/`ERROR`). |
+| `GET /worker/config` | Bearer `WORKER_ADMIN_TOKEN` | Full detail: `workDir` (parent directory of `LLAMA_MODEL`), `llamaServerUrl`, `pollIntervalMs`, internal status (`STARTING`/`IDLE`/`RUNNING`/`ERROR`), uptime, worker/backend IDs, model, quantization, GPU name, hostname. |
+| `GET /worker/models` | Bearer `WORKER_ADMIN_TOKEN` | Model files found in `workDir`, non-recursive scan, extension allow-list (`.gguf`, `.bin`, `.safetensors`), sorted by `lastModified` desc. Capped at `WORKER_INFO_MODELS_SCAN_MAX` (default 500). |
+
+Token check uses SHA-256 of both sides before `MessageDigest.isEqual` to avoid timing oracles.
+Missing or wrong token → `403`. Unset `WORKER_ADMIN_TOKEN` → `503 ADMIN_DISABLED` (checked
+before any token work).
+
+```bash
+# On the worker host (loopback-only by default)
+curl http://127.0.0.1:8082/worker/info
+curl -H "Authorization: Bearer $WORKER_ADMIN_TOKEN" http://127.0.0.1:8082/worker/config
+curl -H "Authorization: Bearer $WORKER_ADMIN_TOKEN" http://127.0.0.1:8082/worker/models
+```
+
+**Gateway proxy (recommended):** the frontend calls `GET /backends/{id}/worker/info` on the
+Gateway, which proxies to `${backend.url}/worker/info`. This hides worker URLs from the browser
+and avoids CORS headers on the Worker. The `WORKER_INFO_BIND_ADDRESS` can stay `127.0.0.1` if
+the Gateway reaches the Worker over a LAN address (set `BACKEND_URL` accordingly).
 
 ## 9. Operational notes
 

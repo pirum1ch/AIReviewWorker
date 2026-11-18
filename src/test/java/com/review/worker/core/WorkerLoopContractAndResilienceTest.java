@@ -244,7 +244,7 @@ class WorkerLoopContractAndResilienceTest {
 
         WorkerLoop workerLoop = new WorkerLoop(gatewayClient, llamaClient, promptTemplateService,
                 new com.review.worker.llama.DecoderConstraintResolver(new com.fasterxml.jackson.databind.ObjectMapper(), properties),
-                heartbeatScheduler, metrics, properties);
+                heartbeatScheduler, metrics, properties, new com.review.worker.info.WorkerStateHolder());
         loopsToStop.add(workerLoop);
         return new Harness(properties, metrics, registry, workerLoop, gatewayDispatcher);
     }

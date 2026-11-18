@@ -144,6 +144,18 @@ worker:
     # указанное число секунд, пока нет доступных job'ов; 0 отключает такое логирование.
     idle-summary-interval-sec: ${WORKER_IDLE_SUMMARY_INTERVAL_SEC:300}   # минимальный интервал (в секундах) между INFO-логами о простое Worker'а при отсутствии job'ов; 0 — отключить
 
+# ---- §D Информационные / admin-эндпоинты (REQ-6/REQ-7) ----------------------------------------
+# Отдельный TCP-порт (по умолчанию 8082, только loopback) для GET /worker/info (публичный, без
+# аутентификации) и GET /worker/config + GET /worker/models (admin, требуют Bearer-токен).
+# PortIsolationInterceptor блокирует /worker/** на actuator-порту (8081) и всё остальное на
+# info-порту (8082).
+info:
+  port: ${WORKER_INFO_PORT:8082}                             # порт информационного сервера (REQ-6/REQ-7); должен отличаться от server.port
+  admin-token: ${WORKER_ADMIN_TOKEN:}                        # Bearer-токен для /worker/config и /worker/models; пусто — эндпоинты отключены (503)
+  bind-address: ${WORKER_INFO_BIND_ADDRESS:127.0.0.1}        # адрес привязки info-сервера; 0.0.0.0 требует WORKER_INFO_UNSAFE_PUBLIC_BIND=true
+  unsafe-public-bind: ${WORKER_INFO_UNSAFE_PUBLIC_BIND:false} # явный opt-in для привязки к 0.0.0.0 — убедитесь, что порт закрыт фаерволом
+  models-scan-max: ${WORKER_INFO_MODELS_SCAN_MAX:500}        # максимальное число файлов, сканируемых в /worker/models
+
 # ---- §C Промпт-шаблоны ---------------------------------------------------------------------------
 prompt:
   # WSR-07: MUST start with "classpath:" -- templates ship only inside the fat JAR, never from an
