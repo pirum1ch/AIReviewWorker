@@ -65,7 +65,8 @@ class WorkerApplicationStartupTest {
                         "--server.port=0",
                         "--network.poll-interval-ms=50",
                         "--network.gateway-timeout-sec=1",
-                        "--spring.lifecycle.timeout-per-shutdown-phase=2s");
+                        "--spring.lifecycle.timeout-per-shutdown-phase=2s",
+                        "--info.port=0");
         long elapsedMs = (System.nanoTime() - before) / 1_000_000;
         log.info("Worker application context startup took {} ms", elapsedMs);
 

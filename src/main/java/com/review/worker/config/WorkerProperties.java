@@ -8,12 +8,15 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.boot.context.properties.NestedConfigurationProperty;
 import org.springframework.stereotype.Component;
 import org.springframework.validation.annotation.Validated;
 
 import java.lang.management.ManagementFactory;
 import java.net.URI;
 import java.net.URISyntaxException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.List;
 import java.util.Locale;
 
@@ -76,6 +79,8 @@ public class WorkerProperties {
     private final Heartbeat heartbeat = new Heartbeat();
     @Valid
     private final Prompt prompt = new Prompt();
+    @NestedConfigurationProperty
+    private final Info info = new Info();
 
     /**
      * These four are read directly (not part of the {@code gateway/worker/...} tree) so
@@ -128,6 +133,10 @@ public class WorkerProperties {
         return prompt;
     }
 
+    public Info getInfo() {
+        return info;
+    }
+
     @PostConstruct
     void validateOnStartup() {
         validateGatewayUrl();
@@ -146,6 +155,7 @@ public class WorkerProperties {
         validatePromptLocation();
         validateServerBinding();
         validateBackendUrl();
+        validateInfo();
         warnIfHeapDumpOnOutOfMemoryEnabled();
     }
 
@@ -340,6 +350,53 @@ public class WorkerProperties {
         } catch (RuntimeException e) {
             // Never fail startup over a diagnostic-only check.
             log.debug("Could not inspect JVM input arguments for HeapDumpOnOutOfMemoryError", e);
+        }
+    }
+
+    /**
+     * Validates the {@code worker.info.*} configuration block:
+     * <ul>
+     *   <li>Port range and no collision with server.port.</li>
+     *   <li>bindAddress "0.0.0.0" rejected unless {@code unsafePublicBind} is explicitly set.</li>
+     *   <li>adminToken, if set, must be at least 32 characters; its presence is logged as
+     *       {@code [set]}, never the actual value.</li>
+     * </ul>
+     */
+    private void validateInfo() {
+        int infoPort = info.getPort();
+        // Port 0 is special: Tomcat assigns a random free port (useful in tests). All other values
+        // must be in the unprivileged range.
+        if (infoPort != 0 && (infoPort < 1024 || infoPort > 65535)) {
+            throw new IllegalStateException(
+                    "worker.info.port must be 0 (auto) or in [1024, 65535] — refusing to start");
+        }
+        // Collision with server.port is fatal: two connectors on the same port would fail at bind time,
+        // but failing here gives a far clearer error message.
+        try {
+            int sp = serverPort != null && !serverPort.isBlank() ? Integer.parseInt(serverPort.trim()) : -1;
+            if (sp > 0 && infoPort > 0 && infoPort == sp) {
+                throw new IllegalStateException(
+                        "worker.info.port must differ from server.port — refusing to start");
+            }
+        } catch (NumberFormatException ignored) {
+            // server.port is non-numeric (e.g. "0" for random assignment in tests): skip collision check.
+        }
+        if ("0.0.0.0".equals(info.getBindAddress()) && !info.isUnsafePublicBind()) {
+            throw new IllegalStateException(
+                    "worker.info.bind-address is 0.0.0.0 (all interfaces) — set "
+                            + "WORKER_INFO_UNSAFE_PUBLIC_BIND=true to allow a public bind, but "
+                            + "ensure the info port is firewalled — refusing to start");
+        }
+        String adminToken = info.getAdminToken();
+        if (adminToken != null && !adminToken.isBlank()) {
+            if (adminToken.length() < MIN_API_KEY_LENGTH) {
+                throw new IllegalStateException(
+                        "worker.info.admin-token must be at least " + MIN_API_KEY_LENGTH
+                                + " characters — refusing to start");
+            }
+            log.info("worker.info.admin-token [set] — admin endpoints enabled on port {}", infoPort);
+        } else {
+            log.info("worker.info.admin-token [not set] — admin endpoints return 503 ADMIN_DISABLED");
         }
     }
 
@@ -673,5 +730,70 @@ public class WorkerProperties {
         public void setLocation(String location) {
             this.location = location;
         }
+    }
+
+    /**
+     * Configuration for the REQ-6 / REQ-7 info/admin HTTP endpoints served on a separate port
+     * (default 8082, bound to 127.0.0.1 by default).
+     */
+    public static class Info {
+        /** TCP port for the info/admin server. Default 8082. */
+        private int port = 8082;
+        /**
+         * Bearer token that gates {@code /worker/config} and {@code /worker/models}.
+         * {@code null} or blank disables those endpoints (503 ADMIN_DISABLED).
+         * Never logged — only {@code [set]}/{@code [not set]} is surfaced.
+         */
+        private String adminToken;
+        /** Address the info-server connector binds to. Default {@code "127.0.0.1"}. */
+        private String bindAddress = "127.0.0.1";
+        /**
+         * Explicit opt-in required to bind to {@code 0.0.0.0} (all interfaces).
+         * Fails startup unless this is {@code true} when bindAddress is {@code 0.0.0.0}.
+         */
+        private boolean unsafePublicBind = false;
+        /** Maximum number of files scanned during model listing. Default 500. */
+        private int modelsScanMax = 500;
+
+        public int getPort() {
+            return port;
+        }
+
+        public void setPort(int port) {
+            this.port = port;
+        }
+
+        public String getAdminToken() {
+            return adminToken;
+        }
+
+        public void setAdminToken(String adminToken) {
+            this.adminToken = adminToken;
+        }
+
+        public String getBindAddress() {
+            return bindAddress;
+        }
+
+        public void setBindAddress(String bindAddress) {
+            this.bindAddress = bindAddress;
+        }
+
+        public boolean isUnsafePublicBind() {
+            return unsafePublicBind;
+        }
+
+        public void setUnsafePublicBind(boolean unsafePublicBind) {
+            this.unsafePublicBind = unsafePublicBind;
+        }
+
+        public int getModelsScanMax() {
+            return modelsScanMax;
+        }
+
+        public void setModelsScanMax(int modelsScanMax) {
+            this.modelsScanMax = modelsScanMax;
+        }
+
     }
 }
