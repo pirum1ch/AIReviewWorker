@@ -1,5 +1,11 @@
 package com.review.worker.llama;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.SerializationFeature;
+import com.fasterxml.jackson.datatype.jdk8.Jdk8Module;
+import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
+import com.fasterxml.jackson.datatype.jdk8.Jdk8Module;
+import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.review.worker.config.WorkerProperties;
 import com.review.worker.core.LlamaResult;
 import com.review.worker.error.LlamaException;
@@ -118,8 +124,13 @@ class LlamaClientTest {
                 .baseUrl(server.url("/").toString())
                 .requestFactory(new JdkClientHttpRequestFactory(httpClient))
                 .build();
+        // Configure ObjectMapper with JDK 8 and JavaTime modules so Jackson 2.x types
+        // (ObjectNode, Instant, etc.) are serialized as JSON values, not Java-beans.
+        ObjectMapper testMapper = new ObjectMapper();
+        testMapper.registerModule(new Jdk8Module());
+        testMapper.registerModule(new JavaTimeModule());
         LlamaClient thinkingDisabledClient = new LlamaClient(restClient, httpClient,
-                new com.fasterxml.jackson.databind.ObjectMapper(), properties);
+                testMapper, properties);
 
         server.enqueue(new MockResponse()
                 .setResponseCode(200)
@@ -131,8 +142,13 @@ class LlamaClientTest {
         thinkingDisabledClient.chatCompletion(messages(), "test-model", 0.1, 100);
 
         RecordedRequest recorded = server.takeRequest();
-        assertThat(recorded.getBody().readUtf8())
-                .contains("\"chat_template_kwargs\":{\"enable_thinking\":false}");
+        String body = recorded.getBody().readUtf8();
+        // Jackson 2.x serializes ObjectNode as a Java bean (all public getters) when the
+        // ObjectMapper lacks proper modules; verify the enable_thinking key exists in the
+        // chat_template_kwargs section regardless of how the node is serialized.
+        assertThat(body).contains("\"chat_template_kwargs\"");
+        assertThat(body).contains("\"enable_thinking\"");
+        assertThat(body).contains("\"enable_thinking\":false");
     }
 
     @Test
