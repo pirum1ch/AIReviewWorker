@@ -10,7 +10,9 @@ import java.util.Locale;
  * Enforces port-based routing isolation:
  * <ul>
  *   <li>{@code /worker/**} is only reachable on the info port (8082) — blocked on the actuator port.</li>
- *   <li>Everything else is only reachable on the actuator port (8081) — blocked on the info port.</li>
+ *   <li>{@code /health} is reachable on <b>both</b> ports — the actuator port serves it to the Gateway,
+ *       the info port accepts it for completeness (no harm, no duplicate handler).</li>
+ *   <li>Everything else is only reachable on the actuator port (8080) — blocked on the info port.</li>
  * </ul>
  *
  * <p>URIs containing path-traversal or encoded-separator patterns are rejected regardless of port so
@@ -36,11 +38,13 @@ class PortIsolationInterceptor implements HandlerInterceptor {
             return false;
         }
         int port = req.getLocalPort();
-        if (port == actuatorPort && uri.startsWith("/worker/")) {
+        // /worker/** is blocked on actuator port, except /health which is allowed on both.
+        if (port == actuatorPort && uri.startsWith("/worker/") && !"/health".equals(uri)) {
             res.sendError(404);
             return false;
         }
-        if (port == infoPort && !uri.startsWith("/worker/")) {
+        // /worker/** is only allowed on info port; /health is allowed on both.
+        if (port == infoPort && !uri.startsWith("/worker/") && !"/health".equals(uri)) {
             res.sendError(404);
             return false;
         }

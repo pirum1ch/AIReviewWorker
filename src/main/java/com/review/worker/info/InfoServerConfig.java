@@ -13,7 +13,7 @@ import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 /**
  * Adds a second Tomcat connector on the info port (default 8082) and registers a
  * {@link PortIsolationInterceptor} that restricts {@code /worker/**} to that port and blocks it on
- * the actuator port (8081).
+ * the actuator port (8080). {@code /health} is reachable on both ports.
  *
  * <p>Both ports share the same {@link org.springframework.web.servlet.DispatcherServlet} and
  * application context — a fully isolated second context is unnecessary given that the interceptor
@@ -27,7 +27,7 @@ public class InfoServerConfig implements WebMvcConfigurer {
     private final int serverPort;
 
     public InfoServerConfig(WorkerProperties props,
-                             @Value("${server.port:8081}") int serverPort) {
+                             @Value("${server.port:8080}") int serverPort) {
         this.props = props;
         this.serverPort = serverPort;
     }

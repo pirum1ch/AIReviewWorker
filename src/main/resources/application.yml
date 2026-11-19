@@ -25,7 +25,7 @@ server:
   # наружу открывается actuator (health/prometheus), diffs/tokens по нему не передаются. Разрешено
   # validateServerBinding() (isPermittedBindHost); без пересборки jar'а это значение не применится.
   address: 0.0.0.0                 # адрес, на котором встроенный HTTP-сервер Worker'а слушает запросы (все интерфейсы) — проверяется при старте
-  port: ${WORKER_HTTP_PORT:8081}   # порт встроенного HTTP-сервера Worker'а (обслуживает только actuator-эндпоинты)
+  port: ${WORKER_HTTP_PORT:8080}   # порт встроенного HTTP-сервера Worker'а (actuator + GET /health)
   shutdown: graceful               # включает graceful shutdown — Worker дожидается завершения активных запросов перед остановкой
 
 management:
