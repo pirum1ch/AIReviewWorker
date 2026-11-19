@@ -103,6 +103,18 @@ class PortIsolationInterceptorTest {
         assertThat(res.getStatus()).isEqualTo(400);
     }
 
+    // ---- /health on both ports -----------------------------------------------------------------
+
+    @Test
+    void healthAllowedOnActuatorPort() throws Exception {
+        assertThat(handle(ACTUATOR_PORT, "/health")).isTrue();
+    }
+
+    @Test
+    void healthAllowedOnInfoPort() throws Exception {
+        assertThat(handle(INFO_PORT, "/health")).isTrue();
+    }
+
     // ---- helpers -------------------------------------------------------------------------------
 
     private boolean handle(int port, String uri) throws Exception {
