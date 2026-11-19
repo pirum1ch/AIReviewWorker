@@ -1,6 +1,6 @@
 package com.review.worker.lifecycle;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.databind.ObjectMapper;
 import com.review.worker.config.WorkerProperties;
 import com.review.worker.core.HeartbeatScheduler;
 import com.review.worker.core.WorkerLoop;
@@ -134,7 +134,7 @@ class GracefulShutdownIntegrationTest {
         WorkerMetrics metrics = new WorkerMetrics(new SimpleMeterRegistry());
 
         WorkerLoop workerLoop = new WorkerLoop(gatewayClient, llamaClient, promptTemplateService,
-                new com.review.worker.llama.DecoderConstraintResolver(new com.fasterxml.jackson.databind.ObjectMapper(), properties),
+                new com.review.worker.llama.DecoderConstraintResolver(new tools.jackson.databind.ObjectMapper(), properties),
                 heartbeatScheduler, metrics, properties, new com.review.worker.info.WorkerStateHolder());
         loopsToStop.add(workerLoop);
         return workerLoop;

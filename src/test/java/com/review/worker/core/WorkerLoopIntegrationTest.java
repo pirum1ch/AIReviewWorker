@@ -1,6 +1,6 @@
 package com.review.worker.core;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.databind.ObjectMapper;
 import com.review.worker.config.WorkerProperties;
 import com.review.worker.gateway.GatewayClient;
 import com.review.worker.llama.LlamaClient;
@@ -240,7 +240,7 @@ class WorkerLoopIntegrationTest {
         WorkerMetrics metrics = new WorkerMetrics(registry);
 
         WorkerLoop workerLoop = new WorkerLoop(gatewayClient, llamaClient, promptTemplateService,
-                new com.review.worker.llama.DecoderConstraintResolver(new com.fasterxml.jackson.databind.ObjectMapper(), properties),
+                new com.review.worker.llama.DecoderConstraintResolver(new tools.jackson.databind.ObjectMapper(), properties),
                 heartbeatScheduler, metrics, properties, new com.review.worker.info.WorkerStateHolder());
         loopsToStop.add(workerLoop);
         return new Harness(properties, metrics, registry, workerLoop, gatewayDispatcher);

@@ -96,7 +96,7 @@ class WorkerLoopReportFailureCrashGuardTest {
 
         WorkerProperties workerProperties = newProperties();
         WorkerLoop loop = new WorkerLoop(gatewayClient, llamaClient, promptTemplateService,
-                new com.review.worker.llama.DecoderConstraintResolver(new com.fasterxml.jackson.databind.ObjectMapper(), workerProperties),
+                new com.review.worker.llama.DecoderConstraintResolver(new tools.jackson.databind.ObjectMapper(), workerProperties),
                 heartbeatScheduler, metrics, workerProperties, new com.review.worker.info.WorkerStateHolder());
         loopsToStop.add(loop);
         loop.start();

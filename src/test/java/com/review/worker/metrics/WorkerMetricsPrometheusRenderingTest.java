@@ -1,12 +1,14 @@
 package com.review.worker.metrics;
 
 import org.junit.jupiter.api.Test;
-import org.springframework.boot.test.autoconfigure.actuate.observability.AutoConfigureObservability;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.test.web.client.TestRestTemplate;
 import org.springframework.boot.test.web.server.LocalManagementPort;
-import org.springframework.http.ResponseEntity;
 import org.springframework.test.context.TestPropertySource;
+
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -18,7 +20,6 @@ import static org.assertj.core.api.Assertions.assertThat;
  * are exercised for real here rather than assumed.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
-@AutoConfigureObservability
 @TestPropertySource(properties = {
         "gateway.url=https://gateway.internal",
         "gateway.api-key=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -38,22 +39,23 @@ class WorkerMetricsPrometheusRenderingTest {
     @org.springframework.beans.factory.annotation.Autowired
     private WorkerMetrics workerMetrics;
 
-    @org.springframework.beans.factory.annotation.Autowired
-    private TestRestTemplate restTemplate;
-
     @Test
-    void allSixWorkerMetricsRenderWithExactPrometheusNames() {
+    void allSixWorkerMetricsRenderWithExactPrometheusNames() throws Exception {
         workerMetrics.incrementJobsTotal();
         workerMetrics.incrementJobsCompleted();
         workerMetrics.incrementJobsFailed();
         workerMetrics.incrementGatewayErrors();
         workerMetrics.recordLlamaDuration(java.time.Duration.ofMillis(500));
 
-        ResponseEntity<String> response = restTemplate.getForEntity(
-                "http://127.0.0.1:" + managementPort + "/actuator/prometheus", String.class);
+        HttpClient client = HttpClient.newHttpClient();
+        HttpRequest request = HttpRequest.newBuilder()
+                .uri(URI.create("http://127.0.0.1:" + managementPort + "/actuator/prometheus"))
+                .GET()
+                .build();
+        HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
 
-        assertThat(response.getStatusCode().is2xxSuccessful()).isTrue();
-        String body = response.getBody();
+        assertThat(response.statusCode()).isBetween(200, 299);
+        String body = response.body();
         assertThat(body).contains("worker_jobs_total");
         assertThat(body).contains("worker_jobs_completed_total");
         assertThat(body).contains("worker_jobs_failed_total");

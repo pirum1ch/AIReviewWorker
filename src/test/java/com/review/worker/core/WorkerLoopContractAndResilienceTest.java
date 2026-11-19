@@ -1,7 +1,7 @@
 package com.review.worker.core;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
 import com.review.worker.config.WorkerProperties;
 import com.review.worker.gateway.GatewayClient;
 import com.review.worker.llama.LlamaClient;
@@ -243,7 +243,7 @@ class WorkerLoopContractAndResilienceTest {
         WorkerMetrics metrics = new WorkerMetrics(registry);
 
         WorkerLoop workerLoop = new WorkerLoop(gatewayClient, llamaClient, promptTemplateService,
-                new com.review.worker.llama.DecoderConstraintResolver(new com.fasterxml.jackson.databind.ObjectMapper(), properties),
+                new com.review.worker.llama.DecoderConstraintResolver(new tools.jackson.databind.ObjectMapper(), properties),
                 heartbeatScheduler, metrics, properties, new com.review.worker.info.WorkerStateHolder());
         loopsToStop.add(workerLoop);
         return new Harness(properties, metrics, registry, workerLoop, gatewayDispatcher);
@@ -324,7 +324,7 @@ class WorkerLoopContractAndResilienceTest {
                 "workerId", "rawResponse", "promptTokens", "completionTokens", "durationMs", "model",
                 "finishReason");
         Set<String> actualFields = new java.util.HashSet<>();
-        resultBody.fieldNames().forEachRemaining(actualFields::add);
+        resultBody.propertyStream().forEach(e -> actualFields.add(e.getKey()));
         assertThat(actualFields).as("result payload fields exactly match the Gateway contract")
                 .isEqualTo(expectedFields);
 

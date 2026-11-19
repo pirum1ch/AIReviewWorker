@@ -1,6 +1,6 @@
 package com.review.worker.llama;
 
-import com.fasterxml.jackson.databind.JsonNode;
+import tools.jackson.databind.JsonNode;
 
 /**
  * Structured Review Output (architecture §3.3, SRO-13): the Gateway-supplied decoder constraint,
