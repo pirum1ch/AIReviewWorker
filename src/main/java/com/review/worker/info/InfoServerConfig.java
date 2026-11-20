@@ -3,12 +3,14 @@ package com.review.worker.info;
 import com.review.worker.config.WorkerProperties;
 import org.apache.catalina.connector.Connector;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.boot.web.embedded.tomcat.TomcatServletWebServerFactory;
+import org.springframework.boot.tomcat.servlet.TomcatServletWebServerFactory;
 import org.springframework.boot.web.server.WebServerFactoryCustomizer;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.web.servlet.config.annotation.InterceptorRegistry;
 import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
+
+import java.util.List;
 
 /**
  * Adds a second Tomcat connector on the info port (default 8082) and registers a
@@ -38,7 +40,7 @@ public class InfoServerConfig implements WebMvcConfigurer {
             Connector connector = new Connector("org.apache.coyote.http11.Http11NioProtocol");
             connector.setPort(props.getInfo().getPort());
             connector.setProperty("address", props.getInfo().getBindAddress());
-            factory.addAdditionalTomcatConnectors(connector);
+            factory.setAdditionalConnectors(List.of(connector));
         };
     }
 

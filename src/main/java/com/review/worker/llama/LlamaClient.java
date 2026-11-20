@@ -1,7 +1,8 @@
 package com.review.worker.llama;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.core.JacksonException;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
 import com.review.worker.config.WorkerProperties;
 import com.review.worker.core.LlamaResult;
 import com.review.worker.error.JobFailureReason;
@@ -136,6 +137,19 @@ public class LlamaClient {
                             return readBounded(clientResponse.getBody());
                         } catch (BoundedInputStream.ResponseTooLargeException e) {
                             throw oversizeException(e);
+                        } catch (JacksonException e) {
+                            // Eclipse TinyJACKSON: JacksonException doesn't extend IOException,
+                            // so it bypasses the IOException catch. Unwrap to detect
+                            // ResponseTooLargeException (oversize → "exceeded" message).
+                            Throwable cause = e;
+                            while (cause != null) {
+                                if (cause instanceof BoundedInputStream.ResponseTooLargeException) {
+                                    throw oversizeException(
+                                            (BoundedInputStream.ResponseTooLargeException) cause);
+                                }
+                                cause = cause.getCause();
+                            }
+                            throw new LlamaException("Could not parse llama-server response", e);
                         } catch (IOException e) {
                             throw new LlamaException("Could not parse llama-server response", e);
                         }
@@ -173,12 +187,7 @@ public class LlamaClient {
                                                 int maxTokens, DecoderConstraint constraint) {
         ChatCompletionRequest requestBody = new ChatCompletionRequest(model, messages, temperature, maxTokens,
                 constraint.responseFormat(), constraint.jsonSchema(), chatTemplateKwargs);
-        byte[] payload;
-        try {
-            payload = objectMapper.writeValueAsBytes(requestBody);
-        } catch (IOException e) {
-            throw new LlamaException("Could not serialize llama-server request", e);
-        }
+        byte[] payload = objectMapper.writeValueAsBytes(requestBody);
         int requestTimeoutSec = properties.getNetwork().getRequestTimeoutSec();
         HttpRequest request = HttpRequest.newBuilder(chatCompletionsUri())
                 .timeout(Duration.ofSeconds(requestTimeoutSec))
@@ -213,7 +222,7 @@ public class LlamaClient {
             parsed = readBounded(response.body());
         } catch (BoundedInputStream.ResponseTooLargeException e) {
             throw oversizeException(e);
-        } catch (IOException e) {
+        } catch (JacksonException e) {
             throw new LlamaException("Could not parse llama-server response", e);
         }
         return toResult(parsed, requestedModel, durationMs);
@@ -310,10 +319,30 @@ public class LlamaClient {
         return JobFailureReason.LLM_ERROR;
     }
 
-    private ChatCompletionResponse readBounded(InputStream rawBody) throws IOException {
+    private ChatCompletionResponse readBounded(InputStream rawBody) throws BoundedInputStream.ResponseTooLargeException {
         long maxResponseBytes = properties.getWorker().getLimits().getMaxResponseBytes();
         try (InputStream bounded = new BoundedInputStream(rawBody, maxResponseBytes)) {
             return objectMapper.readValue(bounded, ChatCompletionResponse.class);
+        } catch (BoundedInputStream.ResponseTooLargeException e) {
+            // Re-throw: the caller needs to distinguish oversized from parse errors.
+            throw e;
+        } catch (JacksonException e) {
+            // Eclipse TinyJACKSON: JacksonException extends Exception (not IOException),
+            // so it bypasses the catch below. Unwrap to check for ResponseTooLargeException
+            // (Jackson wraps the stream-level exception as the cause).
+            Throwable cause = e;
+            while (cause != null) {
+                if (cause instanceof BoundedInputStream.ResponseTooLargeException) {
+                    throw (BoundedInputStream.ResponseTooLargeException) cause;
+                }
+                cause = cause.getCause();
+            }
+            // Re-throw: chatCompletion() catches JacksonException and wraps in LlamaException.
+            throw e;
+        } catch (IOException e) {
+            // BoundedInputStream.close() can throw IOException (stream closed etc.) — wrap as
+            // JacksonIOException (IOException is safe here since this is a pure IOException path).
+            throw tools.jackson.core.exc.JacksonIOException.construct(e);
         }
     }
 

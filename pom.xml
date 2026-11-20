@@ -5,14 +5,15 @@
     <modelVersion>4.0.0</modelVersion>
 
     <!-- Standalone Maven project, NOT a module of the root Gateway pom.xml (docs/worker-architecture.md
-         §11: "worker/pom.xml # Spring Boot 3.5.16 parent, standalone (not a root module)"). Built and
+         §11: "worker/pom.xml # Spring Boot 4.1.2 parent, standalone (not a root module)"). Built and
          tested independently: `cd worker && mvn test`. -->
     <parent>
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-starter-parent</artifactId>
-        <!-- Pinned to the exact same line as the Gateway (docs/worker-architecture.md §3.3): identical
-             CVE posture, no version drift for the appsec/SAST stage to re-triage. -->
-        <version>3.5.16</version>
+        <!-- Boot 4.1.2 → Spring Framework 7.0.10 (fixes CVSS-9.8 CVEs in spring-webmvc: GHSA-j9f9-w8pj-32f8,
+             GHSA-pc63-qcmh-9cmg — fixed only in 7.0.9+). Boot 3.5.x reached OSS EOL (2026-06-30); 4.1.x
+             is the active supported line (OSS to 2027-07-31). -->
+        <version>4.1.2</version>
         <relativePath/>
     </parent>
 
@@ -25,23 +26,13 @@
     <properties>
         <java.version>21</java.version>
         <mockwebserver.version>4.12.0</mockwebserver.version>
-        <!-- FW-03: jackson-bom 2.21.4 (Boot 3.5.16's default) carries jackson-databind 2.21.4, affected by
-             CVE-2026-54515 (GHSA-5jmj-h7xm-6q6v, JsonIgnoreProperties bypass on case-insensitive
-             deserialization). Bump the whole Jackson BOM (not just jackson-databind in isolation) so every
-             Jackson module (core/databind/annotations) stays on one consistent, Boot-BOM-recognized
-             line; fixed in 2.21.5. -->
-        <jackson-bom.version>2.21.5</jackson-bom.version>
-        <!-- FW-04: logback-core 1.5.34 (Boot 3.5.16's default) is affected by GHSA-jhq6-gfmj-v8fx; fixed in
-             1.5.35. This property (Boot's standard override point) re-pins both logback-core and
-             logback-classic together. -->
+        <!-- Spring Boot 4.x uses tools.jackson:jackson-bom (Jackson 5.x / Jakarta EE 11) natively.
+             No explicit property needed — Boot manages the version. -->
+        <!-- logback 1.5.35: fixes GHSA-jhq6-gfmj-v8fx (Boot's standard override property still works in 4.x). -->
         <logback.version>1.5.35</logback.version>
-        <!-- F-WRS (worker-repo-split SCA gate): Boot 3.5.16's defaults pull log4j-api 2.24.3, affected by
-             GHSA-qv9r-c865-cp47 (fixed 2.25.5), and tomcat-embed-core 10.1.55, affected by three CVEs
-             (GHSA-9xv2-5v5g-p794, GHSA-gcx9-497g-6cp6, GHSA-h3x4-894j-xpx5; fixed 10.1.58, latest patch
-             10.1.59 as of this pin). Both are Boot's own standard override properties, same pattern as
-             jackson-bom/logback above, not a new mechanism. -->
+        <logback.version>1.5.35</logback.version>
+        <!-- Boot 4.1.2 manages Tomcat 11.x natively (no explicit pin needed). -->
         <log4j2.version>2.25.5</log4j2.version>
-        <tomcat.version>10.1.59</tomcat.version>
     </properties>
 
     <dependencies>

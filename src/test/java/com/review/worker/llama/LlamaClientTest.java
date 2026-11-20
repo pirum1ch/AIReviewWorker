@@ -49,7 +49,7 @@ class LlamaClientTest {
                 .baseUrl(server.url("/").toString())
                 .requestFactory(new JdkClientHttpRequestFactory(httpClient))
                 .build();
-        llamaClient = new LlamaClient(restClient, httpClient, new com.fasterxml.jackson.databind.ObjectMapper(), properties);
+        llamaClient = new LlamaClient(restClient, httpClient, new tools.jackson.databind.ObjectMapper(), properties);
     }
 
     @AfterEach
@@ -119,7 +119,7 @@ class LlamaClientTest {
                 .requestFactory(new JdkClientHttpRequestFactory(httpClient))
                 .build();
         LlamaClient thinkingDisabledClient = new LlamaClient(restClient, httpClient,
-                new com.fasterxml.jackson.databind.ObjectMapper(), properties);
+                new tools.jackson.databind.ObjectMapper(), properties);
 
         server.enqueue(new MockResponse()
                 .setResponseCode(200)

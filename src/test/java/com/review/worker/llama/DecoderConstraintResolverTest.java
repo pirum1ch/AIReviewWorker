@@ -1,6 +1,6 @@
 package com.review.worker.llama;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.databind.ObjectMapper;
 import com.review.worker.config.WorkerProperties;
 import com.review.worker.error.AbandonJobException;
 import com.review.worker.error.JobFailureReason;

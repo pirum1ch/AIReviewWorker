@@ -1,6 +1,6 @@
 package com.review.worker.info;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.databind.ObjectMapper;
 import com.review.worker.config.WorkerProperties;
 import com.review.worker.info.dto.WorkerConfigResponse;
 import org.junit.jupiter.api.BeforeEach;

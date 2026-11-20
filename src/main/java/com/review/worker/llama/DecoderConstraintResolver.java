@@ -1,8 +1,8 @@
 package com.review.worker.llama;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.core.JacksonException;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
 import com.review.worker.config.WorkerProperties;
 import com.review.worker.error.AbandonJobException;
 import com.review.worker.error.JobFailureReason;
@@ -73,7 +73,7 @@ public class DecoderConstraintResolver {
         JsonNode node;
         try {
             node = objectMapper.readTree(raw);
-        } catch (JsonProcessingException malformed) {
+        } catch (JacksonException malformed) {
             // SOR-07/WOR-05: never malformed.getMessage() -- it quotes a source excerpt of the untrusted
             // (ultimately MR-author-controlled) text. Only the exception class is safe to log.
             throw new AbandonJobException(
